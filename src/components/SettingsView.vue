@@ -177,7 +177,7 @@ watch([apiKey, endpoint], () => {
         <input
           :type="showKey ? 'text' : 'password'"
           :value="apiKey"
-          placeholder="输入智谱 API Key (格式: xxxx.xxxxxxxx)"
+          placeholder="输入 API Key (格式: xxxx.xxxxxxxx)"
           class="input-field"
           @input="apiKey = ($event.target as HTMLInputElement).value"
         />
@@ -331,7 +331,7 @@ watch([apiKey, endpoint], () => {
         </div>
         <div>
           <div class="card-title">关于</div>
-          <div class="card-desc">智谱 Token 查询工具 v0.1.0</div>
+          <div class="card-desc">ZhipuKit v0.1.0</div>
         </div>
       </div>
     </div>

@@ -65,6 +65,16 @@ async function queryBalance() {
 
   loading.value = false
   localStorage.setItem('zhipu_last_refresh', String(Date.now()))
+
+  // 更新托盘数据
+  syncTrayData()
+}
+
+function syncTrayData() {
+  invoke('update_tray_data', {
+    balance: balance.value,
+    codingPlan: codingPlan.value,
+  }).catch(() => {})
 }
 
 // 监听 Rust 后端推送的自动刷新事件
@@ -83,6 +93,7 @@ async function setupListeners() {
       frozen_balance: (d.frozenBalance as number) ?? 0,
       available_balance: (d.availableBalance as number) ?? 0,
     }
+    syncTrayData()
   })
 
   unlistenPlan = await listen<Record<string, unknown>>('plan-update', (e) => {
@@ -118,6 +129,7 @@ async function setupListeners() {
       weekly_percentage, weekly_next_reset,
       mcp_total, mcp_used, mcp_remaining, mcp_next_reset,
     }
+    syncTrayData()
   })
 }
 
