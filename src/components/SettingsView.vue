@@ -1,0 +1,725 @@
+<script setup lang="ts">
+import { ref, watch, onBeforeUnmount } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+
+const apiKey = defineModel<string>('apiKey')
+const endpoint = defineModel<string>('endpoint')
+
+const showKey = ref(false)
+const saved = ref(false)
+const debugLoading = ref(false)
+const debugResult = ref<{ ok: boolean; msg: string; data?: string } | null>(null)
+const appInfo = ref('')
+
+const autoRefresh = ref(localStorage.getItem('zhipu_auto_refresh') === 'true')
+const refreshInterval = ref(Number(localStorage.getItem('zhipu_refresh_interval') || '30'))
+// 已生效的间隔（用于倒计时计算，只有保存后才更新）
+const appliedInterval = ref(refreshInterval.value)
+
+// 倒计时：基于已生效的间隔计算
+const now = ref(Date.now())
+setInterval(() => { now.value = Date.now() }, 1000)
+
+function getLastRefresh(): number {
+  return Number(localStorage.getItem('zhipu_last_refresh') || '0')
+}
+
+function getRemainSec(): number {
+  if (!autoRefresh.value) return 0
+  const last = getLastRefresh()
+  if (last === 0) return 0
+  const elapsed = Math.floor((now.value - last) / 1000)
+  return Math.max(0, appliedInterval.value - elapsed)
+}
+
+watch(autoRefresh, (v) => {
+  localStorage.setItem('zhipu_auto_refresh', String(v))
+})
+
+// 监听后端刷新事件，更新时间戳（防止切换页面时卡住）
+let unlistenBalance: UnlistenFn | null = null
+let unlistenPlan: UnlistenFn | null = null
+
+listen('balance-update', () => {
+  localStorage.setItem('zhipu_last_refresh', String(Date.now()))
+}).then(fn => { unlistenBalance = fn })
+
+listen('plan-update', () => {
+  localStorage.setItem('zhipu_last_refresh', String(Date.now()))
+}).then(fn => { unlistenPlan = fn })
+
+onBeforeUnmount(() => {
+  if (unlistenBalance) unlistenBalance()
+  if (unlistenPlan) unlistenPlan()
+})
+
+const endpoints = [
+  { label: '国内版 (open.bigmodel.cn)', value: 'https://open.bigmodel.cn' },
+  { label: '国际版 (api.z.ai)', value: 'https://api.z.ai' },
+]
+
+function save() {
+  localStorage.setItem('zhipu_api_key', apiKey.value ?? '')
+  localStorage.setItem('zhipu_endpoint', endpoint.value ?? '')
+  localStorage.setItem('zhipu_refresh_interval', String(refreshInterval.value))
+  localStorage.setItem('zhipu_auto_refresh', String(autoRefresh.value))
+  appliedInterval.value = refreshInterval.value
+  if (autoRefresh.value && apiKey.value) {
+    invoke('start_auto_refresh', {
+      apiKey: apiKey.value,
+      intervalSecs: refreshInterval.value,
+    }).catch(() => {})
+  } else {
+    invoke('stop_auto_refresh').catch(() => {})
+  }
+  saved.value = true
+  setTimeout(() => { saved.value = false }, 2000)
+}
+
+function maskKey(key: string): string {
+  if (!key) return ''
+  if (key.length <= 8) return '****'
+  return key.slice(0, 4) + '****' + key.slice(-4)
+}
+
+async function runDebug() {
+  if (!apiKey.value) {
+    debugResult.value = { ok: false, msg: '请先填写 API Key' }
+    return
+  }
+  debugLoading.value = true
+  debugResult.value = null
+
+  const results: string[] = []
+
+  // Test 1: Coding Plan
+  try {
+    const r = await invoke('query_coding_plan', { apiKey: apiKey.value })
+    results.push(`[Coding Plan] OK — ${JSON.stringify(r)}`)
+  } catch (e) {
+    results.push(`[Coding Plan] FAIL — ${e}`)
+  }
+
+  // Test 2: Balance
+  try {
+    const r = await invoke('query_balance', { apiKey: apiKey.value })
+    results.push(`[Balance] OK — ${JSON.stringify(r)}`)
+  } catch (e) {
+    results.push(`[Balance] FAIL — ${e}`)
+  }
+
+  // Test 3: Token count
+  try {
+    const r = await invoke('count_tokens', { apiKey: apiKey.value, text: '你好世界', model: 'glm-4-flash' })
+    results.push(`[Token Count] OK — ${JSON.stringify(r)}`)
+  } catch (e) {
+    results.push(`[Token Count] FAIL — ${e}`)
+  }
+
+  const hasOk = results.some(r => r.includes('OK'))
+  debugResult.value = {
+    ok: hasOk,
+    msg: results.join('\n'),
+  }
+  debugLoading.value = false
+}
+
+async function openDevtools() {
+  try {
+    await invoke('open_devtools')
+  } catch (e) {
+    alert('DevTools 仅在开发模式下可用')
+  }
+}
+
+async function loadAppInfo() {
+  try {
+    const info = await invoke<Record<string, string>>('get_app_info')
+    appInfo.value = JSON.stringify(info, null, 2)
+  } catch (e) {
+    appInfo.value = `Error: ${e}`
+  }
+}
+
+function clearData() {
+  if (confirm('确定要清除所有本地数据吗？（包括 API Key 和设置）')) {
+    localStorage.clear()
+    apiKey.value = ''
+    endpoint.value = 'https://open.bigmodel.cn'
+    debugResult.value = null
+    appInfo.value = ''
+  }
+}
+
+watch([apiKey, endpoint], () => {
+  saved.value = false
+})
+</script>
+
+<template>
+  <div class="settings">
+    <h2 class="page-title">设置</h2>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon key-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">API Key</div>
+          <div class="card-desc">用于接口鉴权，将保存在本地</div>
+        </div>
+      </div>
+      <div class="input-group">
+        <input
+          :type="showKey ? 'text' : 'password'"
+          :value="apiKey"
+          placeholder="输入智谱 API Key (格式: xxxx.xxxxxxxx)"
+          class="input-field"
+          @input="apiKey = ($event.target as HTMLInputElement).value"
+        />
+        <button class="toggle-btn" @click="showKey = !showKey" :title="showKey ? '隐藏' : '显示'">
+          <svg v-if="!showKey" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
+          </svg>
+        </button>
+      </div>
+      <div v-if="apiKey" class="key-preview">{{ maskKey(apiKey) }}</div>
+    </div>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon globe-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">API 端点</div>
+          <div class="card-desc">选择服务区域</div>
+        </div>
+      </div>
+      <div class="endpoint-options">
+        <label
+          v-for="ep in endpoints"
+          :key="ep.value"
+          :class="['endpoint-option', { selected: endpoint === ep.value }]"
+        >
+          <input type="radio" :value="ep.value" v-model="endpoint" class="radio-hidden" />
+          <div class="radio-dot"></div>
+          <span>{{ ep.label }}</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon refresh-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.52 13.45a8 8 0 0 1-11.06 5.56"/><path d="M5.48 10.55a8 8 0 0 1 11.06-5.56"/>
+            <polyline points="15 2 18.54 5.46 15.01 8.99"/><polyline points="9 22 5.46 18.54 8.99 15.01"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">自动刷新</div>
+          <div class="card-desc">余额查询页面定时自动刷新数据</div>
+        </div>
+        <button :class="['toggle-switch', { on: autoRefresh }]" @click="autoRefresh = !autoRefresh">
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+      <div v-if="autoRefresh" class="refresh-options">
+        <div class="interval-row">
+          <span class="refresh-label">刷新间隔</span>
+          <div class="interval-btns">
+            <button
+              v-for="sec in [10, 30, 60, 120, 300]"
+              :key="sec"
+              :class="['interval-btn', { active: refreshInterval === sec }]"
+              @click="refreshInterval = sec"
+            >
+              {{ sec < 60 ? sec + '秒' : (sec / 60) + '分' }}
+            </button>
+          </div>
+        </div>
+        <div class="refresh-status">
+          <span class="status-dot"></span>
+          <span>{{ getRemainSec() > 0 ? `${getRemainSec()}秒后刷新` : '刷新中...' }}</span>
+        </div>
+      </div>
+    </div>
+
+    <button class="save-btn" @click="save">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+      {{ saved ? '已保存' : '保存设置' }}
+    </button>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon debug-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">调试工具</div>
+          <div class="card-desc">测试 API 连通性</div>
+        </div>
+        <button class="debug-btn" :disabled="debugLoading || !apiKey" @click="runDebug">
+          <span v-if="debugLoading" class="spinner-sm"></span>
+          <span v-else>运行测试</span>
+        </button>
+      </div>
+      <div v-if="debugResult" :class="['debug-output', { ok: debugResult.ok, fail: !debugResult.ok }]">
+        <pre>{{ debugResult.msg }}</pre>
+      </div>
+    </div>
+
+    <div class="setting-card">
+      <div class="card-header">
+        <div class="card-icon dev-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">开发者工具</div>
+          <div class="card-desc">调试与诊断</div>
+        </div>
+      </div>
+
+      <div class="dev-actions">
+        <button class="dev-btn" @click="openDevtools">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+          </svg>
+          打开 DevTools
+        </button>
+        <button class="dev-btn" @click="loadAppInfo">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          应用信息
+        </button>
+        <button class="dev-btn warn" @click="clearData">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          清除数据
+        </button>
+      </div>
+
+      <div v-if="appInfo" class="debug-output ok" style="margin-top: 12px;">
+        <pre>{{ appInfo }}</pre>
+      </div>
+    </div>
+
+    <div class="setting-card about-card">
+      <div class="card-header">
+        <div class="card-icon info-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+        </div>
+        <div>
+          <div class="card-title">关于</div>
+          <div class="card-desc">智谱 Token 查询工具 v0.1.0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.setting-card {
+  padding: 16px 0;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.key-icon {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.globe-icon {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.info-icon {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.card-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.setting-card > :not(.card-header) {
+  margin-left: 48px;
+}
+
+.input-group {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.input-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.toggle-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  transition: all 0.15s;
+}
+
+.toggle-btn:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+
+.key-preview {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, monospace;
+}
+
+.endpoint-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.endpoint-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.endpoint-option:hover {
+  border-color: var(--text-secondary);
+}
+
+.endpoint-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.radio-hidden {
+  display: none;
+}
+
+.radio-dot {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.endpoint-option.selected .radio-dot {
+  border-color: var(--accent);
+}
+
+.endpoint-option.selected .radio-dot::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.save-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 16px;
+  background: var(--accent-gradient);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: opacity 0.2s;
+  margin-left: 48px;
+}
+
+.about-card .card-desc {
+  font-size: 12px;
+}
+
+.refresh-icon {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.toggle-switch {
+  margin-left: auto;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--border);
+  position: relative;
+  transition: background 0.2s;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle-switch.on {
+  background: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+}
+
+.toggle-switch.on .toggle-knob {
+  transform: translateX(18px);
+}
+
+.refresh-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.interval-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.refresh-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.interval-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.interval-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.interval-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.interval-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.refresh-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.dev-icon {
+  background: rgba(139, 92, 246, 0.08);
+  color: #8b5cf6;
+}
+
+.dev-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dev-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.dev-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dev-btn.warn {
+  color: var(--danger);
+  border-color: var(--danger);
+  opacity: 0.7;
+}
+
+.dev-btn.warn:hover {
+  opacity: 1;
+  background: var(--danger-light);
+}
+
+.debug-icon {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.card-header .debug-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  background: var(--accent-gradient);
+  color: #fff;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 600;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+
+.card-header .debug-btn:hover:not(:disabled) { opacity: 0.9; }
+.card-header .debug-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.spinner-sm {
+  width: 12px; height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.debug-output {
+  margin-top: 12px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.debug-output pre {
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+.debug-output.ok {
+  background: var(--success-light);
+  border: 1px solid var(--success);
+}
+
+.debug-output.ok pre { color: var(--success); }
+
+.debug-output.fail {
+  background: var(--danger-light);
+  border: 1px solid var(--danger);
+}
+
+.debug-output.fail pre { color: var(--danger); }
+</style>

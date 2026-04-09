@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(npm --version)",
+      "Bash(pnpm --version)",
+      "mcp__web-reader__webReader",
+      "WebSearch",
+      "Bash(cargo check:*)"
+    ]
+  }
+}
