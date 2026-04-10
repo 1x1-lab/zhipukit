@@ -5,13 +5,14 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import TokenCalculator from './components/TokenCalculator.vue'
 import BalanceQuery from './components/BalanceQuery.vue'
 import SettingsView from './components/SettingsView.vue'
+import ClaudeConfig from './components/ClaudeConfig.vue'
 
-type Tab = 'balance' | 'calculator' | 'settings'
+type Tab = 'balance' | 'calculator' | 'claude' | 'settings'
 
 const activeTab = ref<Tab>('balance')
 const transitionName = ref('fade')
 
-const tabOrder: Tab[] = ['balance', 'calculator', 'settings']
+const tabOrder: Tab[] = ['balance', 'calculator', 'claude', 'settings']
 
 function switchTab(tab: Tab) {
   const from = tabOrder.indexOf(activeTab.value)
@@ -92,6 +93,17 @@ function handleExit() {
         </svg>
         <span>Token计算</span>
       </button>
+
+      <button
+        :class="['nav-item', { active: activeTab === 'claude' }]"
+        @click="switchTab('claude')"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
+        <span>Claude Code</span>
+      </button>
     </nav>
 
     <div class="sidebar-bottom">
@@ -112,6 +124,7 @@ function handleExit() {
       <Transition :name="transitionName" mode="out-in">
         <BalanceQuery v-if="activeTab === 'balance'" key="balance" :api-key="apiKey" :endpoint="endpoint" />
         <TokenCalculator v-else-if="activeTab === 'calculator'" key="calculator" :api-key="apiKey" :endpoint="endpoint" />
+        <ClaudeConfig v-else-if="activeTab === 'claude'" key="claude" :zhipu-api-key="apiKey" />
         <SettingsView v-else key="settings" v-model:api-key="apiKey" v-model:endpoint="endpoint" />
       </Transition>
     </div>

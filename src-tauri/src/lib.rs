@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    WebviewUrl, WebviewWindowBuilder,
     Emitter, Manager,
 };
 
@@ -43,6 +42,171 @@ pub struct CodingPlanInfo {
     pub mcp_used: i64,
     pub mcp_remaining: i64,
     pub mcp_next_reset: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ClaudeCodeStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub config_path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ClaudeCodeConfig {
+    pub model: Option<String>,
+    pub anthropic_auth_token: Option<String>,
+    pub anthropic_base_url: Option<String>,
+    pub anthropic_default_haiku_model: Option<String>,
+    pub anthropic_default_sonnet_model: Option<String>,
+    pub anthropic_default_opus_model: Option<String>,
+    pub api_timeout_ms: Option<String>,
+}
+
+fn get_home_dir() -> Result<std::path::PathBuf, String> {
+    if cfg!(windows) {
+        std::env::var("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| "Cannot determine home directory".to_string())
+    } else {
+        std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .map_err(|_| "Cannot determine home directory".to_string())
+    }
+}
+
+#[tauri::command]
+async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
+    let cmd_name = if cfg!(windows) { "where" } else { "which" };
+    let output = tokio::process::Command::new(cmd_name)
+        .arg("claude")
+        .output()
+        .await
+        .map_err(|e| format!("检测失败: {}", e))?;
+
+    let config_path = get_home_dir()
+        .ok()
+        .map(|h| h.join(".claude").join("settings.json").to_string_lossy().to_string());
+
+    if !output.status.success() {
+        return Ok(ClaudeCodeStatus {
+            installed: false,
+            version: None,
+            path: None,
+            config_path,
+        });
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let version_output = tokio::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .await
+        .ok();
+
+    let version = version_output.and_then(|o| {
+        if o.status.success() {
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+        } else {
+            None
+        }
+    });
+
+    Ok(ClaudeCodeStatus {
+        installed: true,
+        version,
+        path: Some(path),
+        config_path,
+    })
+}
+
+#[tauri::command]
+async fn read_claude_config() -> Result<ClaudeCodeConfig, String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    if !config_path.exists() {
+        return Err("Claude Code 配置文件不存在".to_string());
+    }
+
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+
+    let raw: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("解析 JSON 失败: {}", e))?;
+
+    let env = raw.get("env");
+
+    Ok(ClaudeCodeConfig {
+        model: raw.get("model").and_then(|v| v.as_str()).map(String::from),
+        anthropic_auth_token: env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(|v| v.as_str()).map(String::from),
+        anthropic_base_url: env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(|v| v.as_str()).map(String::from),
+        anthropic_default_haiku_model: env.and_then(|e| e.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")).and_then(|v| v.as_str()).map(String::from),
+        anthropic_default_sonnet_model: env.and_then(|e| e.get("ANTHROPIC_DEFAULT_SONNET_MODEL")).and_then(|v| v.as_str()).map(String::from),
+        anthropic_default_opus_model: env.and_then(|e| e.get("ANTHROPIC_DEFAULT_OPUS_MODEL")).and_then(|v| v.as_str()).map(String::from),
+        api_timeout_ms: env.and_then(|e| e.get("API_TIMEOUT_MS")).and_then(|v| v.as_str()).map(String::from),
+    })
+}
+
+#[tauri::command]
+async fn save_claude_config(
+    model: Option<String>,
+    anthropic_auth_token: Option<String>,
+    anthropic_base_url: Option<String>,
+    anthropic_default_haiku_model: Option<String>,
+    anthropic_default_sonnet_model: Option<String>,
+    anthropic_default_opus_model: Option<String>,
+    api_timeout_ms: Option<String>,
+) -> Result<(), String> {
+    let home = get_home_dir()?;
+    let config_path = home.join(".claude").join("settings.json");
+
+    let content = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("读取配置失败: {}", e))?;
+
+    let mut raw: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("解析 JSON 失败: {}", e))?;
+
+    // Update model
+    if let Some(ref v) = model {
+        raw["model"] = serde_json::Value::String(v.clone());
+    }
+
+    // Ensure env object exists
+    if raw.get("env").is_none() {
+        raw["env"] = serde_json::Value::Object(Default::default());
+    }
+
+    if let Some(ref v) = anthropic_auth_token {
+        raw["env"]["ANTHROPIC_AUTH_TOKEN"] = serde_json::Value::String(v.clone());
+    }
+    if let Some(ref v) = anthropic_base_url {
+        raw["env"]["ANTHROPIC_BASE_URL"] = serde_json::Value::String(v.clone());
+    }
+    if let Some(ref v) = anthropic_default_haiku_model {
+        raw["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = serde_json::Value::String(v.clone());
+    }
+    if let Some(ref v) = anthropic_default_sonnet_model {
+        raw["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = serde_json::Value::String(v.clone());
+    }
+    if let Some(ref v) = anthropic_default_opus_model {
+        raw["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = serde_json::Value::String(v.clone());
+    }
+    if let Some(ref v) = api_timeout_ms {
+        raw["env"]["API_TIMEOUT_MS"] = serde_json::Value::String(v.clone());
+    }
+
+    let output = serde_json::to_string_pretty(&raw)
+        .map_err(|e| format!("序列化 JSON 失败: {}", e))?;
+
+    tokio::fs::write(&config_path, output)
+        .await
+        .map_err(|e| format!("写入配置失败: {}", e))?;
+
+    Ok(())
 }
 
 #[derive(Default)]
@@ -503,36 +667,20 @@ async fn tray_show_main(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn show_popup(app: &tauri::AppHandle) -> Result<(), String> {
-    // 如果窗口已存在，切换显示/隐藏
-    if let Some(window) = app.get_webview_window("tray-popup") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-            return Ok(());
-        }
-        position_popup(app, &window)?;
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = app.emit_to("tray-popup", "popup-shown", ());
+    // 窗口已在 tauri.conf.json 中预定义，直接获取
+    let Some(window) = app.get_webview_window("tray-popup") else {
+        return Err("tray-popup window not found".into());
+    };
+
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
         return Ok(());
     }
 
-    // 首次创建弹出窗口
-    let window = WebviewWindowBuilder::new(
-        app,
-        "tray-popup",
-        WebviewUrl::App("tray-popup.html".into()),
-    )
-    .title("")
-    .inner_size(200.0, 100.0)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(true)
-    .build()
-    .map_err(|e| e.to_string())?;
-
     position_popup(app, &window)?;
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = app.emit_to("tray-popup", "popup-shown", ());
 
     Ok(())
 }
@@ -688,7 +836,10 @@ pub fn run() {
             exit_app,
             get_tray_popup_data,
             tray_show_main,
-            resize_popup
+            resize_popup,
+            detect_claude_code,
+            read_claude_config,
+            save_claude_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
