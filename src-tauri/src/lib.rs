@@ -5,6 +5,18 @@ use tauri::{
     Emitter, Manager,
 };
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 创建 shell 命令，Windows 上隐藏控制台窗口
+fn build_shell_command(program: &str, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BalanceInfo {
     pub balance: f64,
@@ -82,16 +94,14 @@ async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
         .map(|h| h.join(".claude").join("settings.json").to_string_lossy().to_string());
 
     // macOS .app 不继承用户 shell PATH，需要用 login shell 执行
-    let (shell, flag) = if cfg!(windows) {
-        ("cmd", "/C")
+    // Windows: cmd /C 不需要 -c 参数，且需要隐藏控制台窗口
+    let (shell, which_args, version_args) = if cfg!(windows) {
+        ("cmd", vec!["/C", "where claude"], vec!["/C", "claude --version"])
     } else {
-        ("/bin/zsh", "-l")
+        ("/bin/zsh", vec!["-l", "-c", "which claude"], vec!["-l", "-c", "claude --version"])
     };
 
-    let which_cmd = if cfg!(windows) { "where claude" } else { "which claude" };
-
-    let output = tokio::process::Command::new(shell)
-        .args([flag, "-c", which_cmd])
+    let output = build_shell_command(shell, &which_args)
         .output()
         .await
         .map_err(|e| format!("检测失败: {}", e))?;
@@ -105,10 +115,9 @@ async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
         });
     }
 
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
 
-    let version_output = tokio::process::Command::new(shell)
-        .args([flag, "-c", "claude --version"])
+    let version_output = build_shell_command(shell, &version_args)
         .output()
         .await
         .ok();
@@ -825,9 +834,8 @@ pub fn run() {
                                     let _ = show_popup(&app);
                                 }
                                 MouseButtonState::Up => {
-                                    let app = tray.app_handle();
                                     #[cfg(target_os = "macos")]
-                                    set_tray_highlight(&app, false);
+                                    set_tray_highlight(&tray.app_handle(), false);
                                 }
                             }
                         }

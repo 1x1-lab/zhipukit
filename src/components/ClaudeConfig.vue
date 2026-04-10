@@ -91,6 +91,14 @@ async function refresh() {
   loading.value = false
 }
 
+const copiedPath = ref('')
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text)
+  copiedPath.value = text
+  setTimeout(() => { copiedPath.value = '' }, 1500)
+}
+
 function fillFromZhipu() {
   const key = props.zhipuApiKey || localApiKey.value
   if (key) {
@@ -141,10 +149,18 @@ onMounted(() => refresh())
       <div v-if="status?.installed && status.path" class="path-display">
         <span class="path-label">可执行路径</span>
         <code class="path-value">{{ status.path }}</code>
+        <button class="copy-btn" @click="copyToClipboard(status.path!)" :title="copiedPath === status.path ? '已复制' : '复制'">
+          <svg v-if="copiedPath !== status.path" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
       </div>
       <div v-if="status?.config_path" class="path-display" :style="{ marginTop: status?.installed ? '4px' : undefined }">
         <span class="path-label">配置文件</span>
         <code class="path-value">{{ status.config_path }}</code>
+        <button class="copy-btn" @click="copyToClipboard(status.config_path!)" :title="copiedPath === status.config_path ? '已复制' : '复制'">
+          <svg v-if="copiedPath !== status.config_path" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
       </div>
     </div>
 
@@ -395,6 +411,30 @@ onMounted(() => refresh())
   background: var(--bg);
   padding: 2px 8px;
   border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-light);
 }
 
 .fields {
