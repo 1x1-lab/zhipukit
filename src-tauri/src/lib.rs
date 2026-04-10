@@ -77,16 +77,24 @@ fn get_home_dir() -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
-    let cmd_name = if cfg!(windows) { "where" } else { "which" };
-    let output = tokio::process::Command::new(cmd_name)
-        .arg("claude")
-        .output()
-        .await
-        .map_err(|e| format!("检测失败: {}", e))?;
-
     let config_path = get_home_dir()
         .ok()
         .map(|h| h.join(".claude").join("settings.json").to_string_lossy().to_string());
+
+    // macOS .app 不继承用户 shell PATH，需要用 login shell 执行
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("/bin/zsh", "-l")
+    };
+
+    let which_cmd = if cfg!(windows) { "where claude" } else { "which claude" };
+
+    let output = tokio::process::Command::new(shell)
+        .args([flag, "-c", which_cmd])
+        .output()
+        .await
+        .map_err(|e| format!("检测失败: {}", e))?;
 
     if !output.status.success() {
         return Ok(ClaudeCodeStatus {
@@ -99,8 +107,8 @@ async fn detect_claude_code() -> Result<ClaudeCodeStatus, String> {
 
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    let version_output = tokio::process::Command::new("claude")
-        .arg("--version")
+    let version_output = tokio::process::Command::new(shell)
+        .args([flag, "-c", "claude --version"])
         .output()
         .await
         .ok();
@@ -636,6 +644,14 @@ async fn exit_app(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn start_window_drag(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.start_dragging().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_tray_popup_data(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let tray_data = state.tray_data.lock().unwrap();
     Ok(serde_json::json!({
@@ -834,6 +850,7 @@ pub fn run() {
             update_tray_data,
             confirm_minimize_to_tray,
             exit_app,
+            start_window_drag,
             get_tray_popup_data,
             tray_show_main,
             resize_popup,
