@@ -8,7 +8,9 @@
       "mcp__web-reader__webReader",
       "WebSearch",
       "Bash(cargo check:*)",
-      "Bash(npx tauri:*)"
+      "Bash(npx tauri:*)",
+      "Bash(npm run:*)",
+      "Bash(grep -E \"\\\\.\\(json|yaml|yml|toml\\)$\")"
     ]
   }
 }
