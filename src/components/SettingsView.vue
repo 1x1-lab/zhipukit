@@ -17,6 +17,7 @@ const refreshInterval = ref(Number(localStorage.getItem('zhipu_refresh_interval'
 // 已生效的间隔（用于倒计时计算，只有保存后才更新）
 const appliedInterval = ref(refreshInterval.value)
 
+
 const autoStart = ref(false)
 let autostartModule: typeof import('@tauri-apps/plugin-autostart') | null = null
 
@@ -95,9 +96,14 @@ function save() {
   localStorage.setItem('zhipu_refresh_interval', String(refreshInterval.value))
   localStorage.setItem('zhipu_auto_refresh', String(autoRefresh.value))
   appliedInterval.value = refreshInterval.value
+  // 同步 endpoint 到 settings.json，供 zhipukit-status 读取
+  if (endpoint.value) {
+    invoke('save_zhipu_endpoint', { endpoint: endpoint.value }).catch(() => {})
+  }
   if (autoRefresh.value && apiKey.value) {
     invoke('start_auto_refresh', {
       apiKey: apiKey.value,
+      endpoint: endpoint.value,
       intervalSecs: refreshInterval.value,
     }).catch(() => {})
   } else {
@@ -125,7 +131,7 @@ async function runDebug() {
 
   // Test 1: Coding Plan
   try {
-    const r = await invoke('query_coding_plan', { apiKey: apiKey.value })
+    const r = await invoke('query_coding_plan', { apiKey: apiKey.value, endpoint: endpoint.value })
     results.push(`[Coding Plan] OK — ${JSON.stringify(r)}`)
   } catch (e) {
     results.push(`[Coding Plan] FAIL — ${e}`)
@@ -133,7 +139,7 @@ async function runDebug() {
 
   // Test 2: Balance
   try {
-    const r = await invoke('query_balance', { apiKey: apiKey.value })
+    const r = await invoke('query_balance', { apiKey: apiKey.value, endpoint: endpoint.value })
     results.push(`[Balance] OK — ${JSON.stringify(r)}`)
   } catch (e) {
     results.push(`[Balance] FAIL — ${e}`)
@@ -141,7 +147,7 @@ async function runDebug() {
 
   // Test 3: Token count
   try {
-    const r = await invoke('count_tokens', { apiKey: apiKey.value, text: '你好世界', model: 'glm-4-flash' })
+    const r = await invoke('count_tokens', { apiKey: apiKey.value, endpoint: endpoint.value, text: '你好世界', model: 'glm-4-flash' })
     results.push(`[Token Count] OK — ${JSON.stringify(r)}`)
   } catch (e) {
     results.push(`[Token Count] FAIL — ${e}`)

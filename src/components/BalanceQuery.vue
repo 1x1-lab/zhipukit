@@ -43,8 +43,8 @@ async function queryBalance() {
   const errors: string[] = []
 
   const results = await Promise.allSettled([
-    invoke<BalanceInfo>('query_balance', { apiKey: props.apiKey }),
-    invoke<CodingPlanInfo>('query_coding_plan', { apiKey: props.apiKey }),
+    invoke<BalanceInfo>('query_balance', { apiKey: props.apiKey, endpoint: props.endpoint }),
+    invoke<CodingPlanInfo>('query_coding_plan', { apiKey: props.apiKey, endpoint: props.endpoint }),
   ])
 
   if (results[0].status === 'fulfilled') {
@@ -143,6 +143,7 @@ function startRustAutoRefresh() {
   if (!props.apiKey || !autoRefresh.value) return
   invoke('start_auto_refresh', {
     apiKey: props.apiKey,
+    endpoint: props.endpoint,
     intervalSecs: refreshInterval.value,
   }).catch(() => {})
 }

@@ -62,6 +62,7 @@ async function countTokens() {
   try {
     apiResult.value = await invoke<TokenCountResult>('count_tokens', {
       apiKey: props.apiKey,
+      endpoint: props.endpoint,
       text: text.value,
       model: selectedModel.value,
     })

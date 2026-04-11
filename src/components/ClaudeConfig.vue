@@ -27,6 +27,10 @@ interface ClaudeCodeConfig {
 }
 
 const status = ref<ClaudeCodeStatus | null>(null)
+const cacheDuration = ref(Number(localStorage.getItem('zhipu_cache_duration') || '300'))
+const appliedCacheDuration = ref(cacheDuration.value)
+const cacheSaved = ref(false)
+
 const loading = ref(false)
 const error = ref('')
 const saved = ref(false)
@@ -177,6 +181,18 @@ function maskToken(token: string): string {
   return token.slice(0, 4) + '****' + token.slice(-4)
 }
 
+async function saveCacheDuration() {
+  try {
+    localStorage.setItem('zhipu_cache_duration', String(cacheDuration.value))
+    await invoke('save_zhipu_cache_duration', { seconds: cacheDuration.value })
+    appliedCacheDuration.value = cacheDuration.value
+    cacheSaved.value = true
+    setTimeout(() => { cacheSaved.value = false }, 2000)
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
 onMounted(() => refresh())
 </script>
 
@@ -249,7 +265,7 @@ onMounted(() => refresh())
       </button>
     </div>
 
-    <!-- 会话注入 -->
+    <!-- 状态栏插件 -->
     <div v-if="status?.installed" class="setting-card">
       <div class="card-header">
         <div class="card-icon hook-icon">
@@ -258,8 +274,8 @@ onMounted(() => refresh())
           </svg>
         </div>
         <div>
-          <div class="card-title">会话注入</div>
-          <div class="card-desc">在 Claude Code 启动时自动显示智谱套餐信息</div>
+          <div class="card-title">状态栏插件</div>
+          <div class="card-desc">在 Claude Code 状态栏显示智谱套餐信息</div>
         </div>
         <button
           v-if="!hookEnabled"
@@ -285,11 +301,31 @@ onMounted(() => refresh())
         </button>
       </div>
       <div v-if="hookEnabled" class="hook-details">
-        <button class="dev-btn" @click="testHook" :disabled="hookTestResult === '运行中...'">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <div class="interval-row">
+          <span class="cache-label">缓存时间</span>
+          <div class="interval-btns">
+            <button
+              v-for="sec in [60, 180, 300, 600, 900, 1800]"
+              :key="sec"
+              :class="['interval-btn', { active: appliedCacheDuration === sec && cacheDuration === sec, pending: cacheDuration === sec && appliedCacheDuration !== sec }]"
+              @click="cacheDuration = sec"
+            >
+              {{ sec < 60 ? sec + '秒' : (sec / 60) + '分' }}
+            </button>
+          </div>
+          <button
+            v-if="cacheDuration !== appliedCacheDuration"
+            class="cache-save-btn"
+            @click="saveCacheDuration"
+          >
+            {{ cacheSaved ? '已保存' : '保存' }}
+          </button>
+        </div>
+        <button class="test-btn" @click="testHook" :disabled="hookTestResult === '运行中...'">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="5 3 19 12 5 21 5 3"/>
           </svg>
-          测试输出
+          测试
         </button>
         <div v-if="hookTestResult" :class="['debug-output', { ok: !hookTestResult.startsWith('错误'), fail: hookTestResult.startsWith('错误') }]">
           <pre>{{ hookTestResult }}</pre>
@@ -852,4 +888,95 @@ onMounted(() => refresh())
 
 .fix-btn:hover:not(:disabled) { opacity: 0.85; }
 .fix-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.interval-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cache-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.interval-btns {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.interval-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+
+.interval-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.interval-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.interval-btn.pending {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+
+.cache-save-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.cache-save-btn:hover { opacity: 0.85; }
+
+.test-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px 10px;
+  line-height: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+
+.test-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.test-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 </style>
