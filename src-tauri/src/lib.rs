@@ -7,6 +7,8 @@ use tauri::{
 mod api;
 mod claude;
 mod tray;
+mod usage;
+mod zcode;
 pub mod types;
 pub mod utils;
 
@@ -148,7 +150,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api::query_balance,
             api::query_coding_plan,
-            api::count_tokens,
             api::start_auto_refresh,
             api::stop_auto_refresh,
             tray::open_devtools,
@@ -174,7 +175,11 @@ pub fn run() {
             claude::read_segment_config,
             claude::save_segment_config,
             claude::read_bar_colors,
-            claude::save_bar_colors
+            claude::save_bar_colors,
+            zcode::detect_zcode,
+            zcode::read_zcode_config,
+            zcode::save_zcode_config,
+            usage::query_token_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -181,14 +181,6 @@ async function runDebug() {
     results.push(`[Balance] FAIL — ${e}`)
   }
 
-  // Test 3: Token count
-  try {
-    const r = await invoke('count_tokens', { apiKey: apiKey.value, endpoint: endpoint.value, text: '你好世界', model: 'glm-4-flash' })
-    results.push(`[Token Count] OK — ${JSON.stringify(r)}`)
-  } catch (e) {
-    results.push(`[Token Count] FAIL — ${e}`)
-  }
-
   const hasOk = results.some(r => r.includes('OK'))
   debugResult.value = {
     ok: hasOk,

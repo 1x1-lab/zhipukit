@@ -12,22 +12,6 @@ pub struct BalanceInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct TokenCountResult {
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub total_tokens: i64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct CodingQuotaLimit {
-    pub limit_type: String,
-    pub percentage: i64,
-    pub usage: i64,
-    pub current_value: i64,
-    pub remaining: i64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub struct CodingPlanInfo {
     pub level: String,
     pub hour5_percentage: i64,
@@ -58,6 +42,81 @@ pub struct ClaudeCodeConfig {
     pub anthropic_default_opus_model: Option<String>,
     pub api_timeout_ms: Option<String>,
     pub broken_plugins: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ZCodeStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub config_path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ZCodeProvider {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub source: String,
+    pub api_key: String,
+    pub base_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ZCodeConfig {
+    pub config_path: String,
+    pub providers: Vec<ZCodeProvider>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ZCodeProviderInput {
+    pub id: String,
+    pub api_key: String,
+    pub base_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct UsageBucket {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    pub reasoning: i64,
+    pub requests: i64,
+}
+
+impl UsageBucket {
+    pub fn total(&self) -> i64 {
+        self.input + self.output + self.cache_read + self.cache_write + self.reasoning
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct DayStats {
+    pub date: String,
+    pub zcode: UsageBucket,
+    pub claude: UsageBucket,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ModelStats {
+    pub model: String,
+    pub source: String,
+    pub usage: UsageBucket,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct TokenStatsResult {
+    pub zcode_detected: bool,
+    pub claude_detected: bool,
+    /// 聚合粒度："day" 或 "hour"（今天视图按小时）
+    pub granularity: String,
+    pub zcode_sessions: i64,
+    pub claude_sessions: i64,
+    pub totals_zcode: UsageBucket,
+    pub totals_claude: UsageBucket,
+    pub by_day: Vec<DayStats>,
+    pub by_model: Vec<ModelStats>,
 }
 
 #[derive(Default)]

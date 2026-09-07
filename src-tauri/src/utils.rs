@@ -4,7 +4,6 @@ pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 // API 路径常量
 pub const API_PATH_BALANCE: &str = "/api/biz/account/query-customer-account-report";
 pub const API_PATH_CODING_PLAN: &str = "/api/monitor/usage/quota/limit";
-pub const API_PATH_CHAT_COMPLETIONS: &str = "/api/paas/v4/chat/completions";
 
 /// 根据主 endpoint (如 https://open.bigmodel.cn) 推导余额查询的 base URL
 /// 国内版余额 API 在 www.bigmodel.cn，国际版直接使用 endpoint
