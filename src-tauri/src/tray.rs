@@ -25,16 +25,34 @@ pub(crate) fn show_popup(app: &tauri::AppHandle) -> Result<(), String> {
         return Err("tray-popup window not found".into());
     };
 
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
+    let is_visible = window.is_visible().map_err(|error| {
+        log::error!("读取 tray-popup 可见状态失败: {}", error);
+        error.to_string()
+    })?;
+    if is_visible {
+        window.hide().map_err(|error| {
+            log::error!("隐藏 tray-popup 失败: {}", error);
+            error.to_string()
+        })?;
         return Ok(());
     }
 
     // 定位失败不阻止窗口显示（Mac 重启后屏幕信息可能暂不可用）
-    let _ = position_popup(app, &window);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = app.emit_to("tray-popup", "popup-shown", ());
+    if let Err(error) = position_popup(app, &window) {
+        log::warn!("定位 tray-popup 失败，将使用当前窗口位置: {}", error);
+    }
+    window.show().map_err(|error| {
+        log::error!("显示 tray-popup 失败: {}", error);
+        error.to_string()
+    })?;
+    window.set_focus().map_err(|error| {
+        log::error!("聚焦 tray-popup 失败: {}", error);
+        error.to_string()
+    })?;
+    app.emit_to("tray-popup", "popup-shown", ()).map_err(|error| {
+        log::error!("通知 tray-popup 刷新数据失败: {}", error);
+        error.to_string()
+    })?;
 
     Ok(())
 }
@@ -274,24 +292,65 @@ pub async fn resize_popup(
 
 #[tauri::command]
 pub async fn tray_show_main(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    show_main_window(&app, &state)
+}
+
+/// 显示主窗口并应用隐藏窗口的已有重载策略。
+///
+/// This is shared by the popup action and the native tray menu so the latter
+/// remains a recovery path when the popup WebView cannot be interacted with.
+pub(crate) fn show_main_window(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
-        // 隐藏超过 5 分钟则重新加载，防止 WebView 进程被 macOS 终止导致白屏
-        let should_reload = {
-            let hidden_at = state.main_hidden_at.lock().unwrap();
-            hidden_at.map(|t: Instant| t.elapsed().as_secs() > 300).unwrap_or(false)
-        };
-        let _ = window.show();
-        let _ = window.set_focus();
-        if should_reload {
-            if let Ok(url) = window.url() {
-                let _ = window.navigate(url);
-            }
-        }
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|error| {
+            log::error!("切换 macOS 激活策略失败: {}", error);
+            error.to_string()
+        })?;
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        log::error!("显示主窗口失败：main 窗口不存在");
+        "main window not found".to_string()
+    })?;
+
+    // 隐藏超过 5 分钟则重新加载，应用已有的隐藏窗口恢复策略。
+    let should_reload = state
+        .main_hidden_at
+        .lock()
+        .unwrap()
+        .map(|t: Instant| t.elapsed().as_secs() > 300)
+        .unwrap_or(false);
+
+    window.show().map_err(|error| {
+        log::error!("显示主窗口失败: {}", error);
+        error.to_string()
+    })?;
+    window.set_focus().map_err(|error| {
+        log::error!("聚焦主窗口失败: {}", error);
+        error.to_string()
+    })?;
+    if should_reload {
+        let url = window.url().map_err(|error| {
+            log::error!("读取主窗口 URL 失败: {}", error);
+            error.to_string()
+        })?;
+        window.navigate(url).map_err(|error| {
+            log::error!("重载主窗口失败: {}", error);
+            error.to_string()
+        })?;
     }
     if let Some(popup) = app.get_webview_window("tray-popup") {
-        let _ = popup.hide();
+        popup.hide().map_err(|error| {
+            log::error!("隐藏 tray-popup 失败: {}", error);
+            error.to_string()
+        })?;
+    }
+
+    // 只有显示、聚焦、（必要时）重载和 popup 收起都成功后，才清除隐藏时间。
+    if should_reload {
+        *state.main_hidden_at.lock().unwrap() = None;
     }
     Ok(())
 }

@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use tauri::{
-    tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    menu::MenuBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
 
@@ -40,6 +41,9 @@ pub fn run() {
                 // 自启：保持隐藏，直接托盘运行
                 let state = app.state::<AppState>();
                 *state.minimize_to_tray.lock().unwrap() = true;
+                // 自启时主窗口从启动开始就是隐藏状态，记录起点以便首次打开时
+                // 使用已有的隐藏窗口重载策略。
+                *state.main_hidden_at.lock().unwrap() = Some(std::time::Instant::now());
                 #[cfg(target_os = "macos")]
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             } else {
@@ -54,17 +58,44 @@ pub fn run() {
                 *state.minimize_to_tray.lock().unwrap() = persisted;
             }
 
+            // macOS 的 DoubleClick 事件不受支持；保留原生右键菜单作为
+            // popup WebView 异常时的恢复入口。
+            let tray_menu = MenuBuilder::new(app)
+                .text("tray-show-main", "显示窗口")
+                .separator()
+                .text("tray-exit", "退出")
+                .build()?;
+
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .icon_as_template(true)
                 .tooltip("ZhipuKit")
+                .menu(&tray_menu)
+                // 左键继续打开自定义 popup，右键显示原生菜单。
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "tray-show-main" => {
+                        let state = app.state::<AppState>();
+                        if let Err(error) = tray::show_main_window(app, &state) {
+                            log::error!("原生托盘菜单显示主窗口失败: {}", error);
+                        }
+                    }
+                    "tray-exit" => app.exit(0),
+                    _ => {}
+                })
                 .on_tray_icon_event(|tray, event| {
                     match event {
-                        TrayIconEvent::Click { button_state, .. } => {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state,
+                            ..
+                        } => {
                             match button_state {
                                 MouseButtonState::Down => {
                                     let app = tray.app_handle();
-                                    let _ = show_popup(&app);
+                                    if let Err(error) = show_popup(&app) {
+                                        log::error!("显示托盘 popup 失败: {}", error);
+                                    }
                                 }
                                 MouseButtonState::Up => {
                                     #[cfg(target_os = "macos")]
@@ -74,25 +105,9 @@ pub fn run() {
                         }
                         TrayIconEvent::DoubleClick { .. } => {
                             let app = tray.app_handle();
-                            if let Some(window) = app.get_webview_window("main") {
-                                // 隐藏超过 5 分钟则重新加载，防止 WebView 进程被 macOS 终止导致白屏
-                                let should_reload = {
-                                    let state = app.state::<AppState>();
-                                    let x = state.main_hidden_at.lock().unwrap()
-                                        .map(|t| t.elapsed().as_secs() > 300)
-                                        .unwrap_or(false);
-                                    x
-                                };
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                if should_reload {
-                                    if let Ok(url) = window.url() {
-                                        let _ = window.navigate(url);
-                                    }
-                                }
-                            }
-                            if let Some(popup) = app.get_webview_window("tray-popup") {
-                                let _ = popup.hide();
+                            let state = app.state::<AppState>();
+                            if let Err(error) = tray::show_main_window(&app, &state) {
+                                log::error!("托盘双击显示主窗口失败: {}", error);
                             }
                         }
                         _ => {}
