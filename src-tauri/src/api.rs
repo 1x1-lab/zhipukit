@@ -1,8 +1,5 @@
-use crate::types::{AppState, BalanceInfo, CodingPlanInfo, TokenCountResult};
-use crate::utils::{
-    balance_base_url, build_url, API_PATH_BALANCE, API_PATH_CHAT_COMPLETIONS,
-    API_PATH_CODING_PLAN,
-};
+use crate::types::{AppState, BalanceInfo, CodingPlanInfo};
+use crate::utils::{balance_base_url, build_url, API_PATH_BALANCE, API_PATH_CODING_PLAN};
 use tauri::Emitter;
 
 #[tauri::command]
@@ -225,88 +222,6 @@ pub async fn query_coding_plan(
     }
 
     Ok(plan)
-}
-
-#[tauri::command]
-pub async fn count_tokens(
-    state: tauri::State<'_, AppState>,
-    api_key: String,
-    endpoint: String,
-    text: String,
-    model: String,
-) -> Result<TokenCountResult, String> {
-    let client = state.client.clone();
-    let url = build_url(&endpoint, API_PATH_CHAT_COMPLETIONS);
-
-    log::info!(
-        "Token 计算 (model={}): {}",
-        model,
-        if text.len() > 50 {
-            format!("{}...", &text[..50])
-        } else {
-            text.clone()
-        }
-    );
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": text
-            }
-        ],
-        "max_tokens": 1
-    });
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            log::error!("Token 计算请求失败: {}", e);
-            format!("请求失败: {}", e)
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        log::error!("Token 计算 API 错误 ({}): {}", status, body);
-        return Err(format!("API 返回错误 ({}): {}", status, body));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
-
-    let usage = json
-        .get("usage")
-        .ok_or_else(|| format!("响应中无 usage 字段: {}", json))?;
-
-    let result = TokenCountResult {
-        prompt_tokens: usage
-            .get("prompt_tokens")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0),
-        completion_tokens: usage
-            .get("completion_tokens")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0),
-        total_tokens: usage
-            .get("total_tokens")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0),
-    };
-    log::info!(
-        "Token 计算完成: prompt={}, completion={}, total={}",
-        result.prompt_tokens,
-        result.completion_tokens,
-        result.total_tokens
-    );
-    Ok(result)
 }
 
 #[tauri::command]

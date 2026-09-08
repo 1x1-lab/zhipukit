@@ -1,6 +1,6 @@
 # ZhipuKit
 
-一款基于 Tauri 2 + Vue 3 构建的轻量桌面工具，用于查询智谱 AI（Zhipu / Z.ai）账户余额、Coding Plan 配额、Token 用量计算，以及管理本机 Claude Code CLI 配置。
+一款基于 Tauri 2 + Vue 3 构建的轻量桌面工具，用于查询智谱 AI（Zhipu / Z.ai）账户余额、Coding Plan 配额，统计本地 Token 用量，以及管理本机 Zcode 与 Claude Code CLI 配置。
 
 ## 功能
 
@@ -13,10 +13,18 @@
   - MCP 月度调用次数（已用/总量）
 - 支持自动刷新（10 秒 ~ 5 分钟可调）
 
-### Token 计算
-- 支持多模型选择（GLM-4-Plus / GLM-4 / GLM-4-Air / GLM-4-Long / GLM-4-Flash / GLM-4.5 等）
-- 本地快速估算 + API 精确计算
-- 预估费用计算
+### Token 统计
+- 聚合本机会话日志，统计 Token 用量（无需 API Key）
+- 双数据源：Zcode（`~/.zcode/cli/rollout`）与 Claude Code（`~/.claude/projects`）
+- 支持按数据源切换、时间范围筛选（7/14/30/90 天/全部）
+- 汇总卡片（Input / Output / 缓存读写 / Reasoning / 请求数 / 会话数）
+- 按天用量柱状图、按模型聚合表格
+
+### Zcode 配置
+- 自动检测 Zcode 安装状态与配置文件路径（`~/.zcode/v2/config.json`）
+- 可视化编辑各 Provider 的 API Key 与 Base URL
+- 支持 API Key 一键填入（智谱 API Key）
+- 安全读写，保留配置中的未知字段不变（写入前自动备份）
 
 ### Claude Code 配置
 - 自动检测本机 Claude Code CLI 安装状态、版本号、路径（支持多路径探测 + Shell 检测双重机制）
@@ -82,7 +90,8 @@ src/                      # 前端源码
   tray-popup-main.ts      # 托盘弹窗入口
   views/
     BalanceQuery.vue      # 余额查询页面
-    TokenCalculator.vue   # Token 计算页面
+    ZcodeConfig.vue       # Zcode 配置页面
+    TokenStats.vue        # Token 统计页面
     ClaudeConfig.vue      # Claude Code 配置页面
     SettingsView.vue      # 设置页面
   composables/
@@ -92,6 +101,8 @@ src-tauri/
     lib.rs                # 应用入口（窗口管理、托盘、开机自启隐藏）
     api.rs                # API 调用、自动刷新定时器
     claude.rs             # Claude Code 检测与配置管理
+    zcode.rs              # Zcode 检测与 Provider 配置管理
+    usage.rs              # 本地日志 Token 用量统计
     tray.rs               # 托盘交互、关闭到托盘设置持久化
     types.rs              # 共享类型定义
     utils.rs              # 工具函数
@@ -105,7 +116,6 @@ src-tauri/
 |---|---|
 | 余额查询 | `GET /api/biz/account/query-customer-account-report` |
 | Coding Plan 配额 | `GET /api/monitor/usage/quota/limit` |
-| Token 计算 | `POST /api/paas/v4/chat/completions` |
 
 ## License
 

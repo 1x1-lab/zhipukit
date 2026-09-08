@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useBalanceCache } from '../composables/useBalanceCache'
 
@@ -95,6 +95,48 @@ function getCountdown(resetTime: number): string {
   return formatCountdown(resetTime - now.value)
 }
 
+const DAY_MS = 86_400_000
+
+// 周期天数进度：以重置时间为终点回推窗口，计算当前第几天
+function windowProgress(resetTime: number, windowMs: number, segments = 0) {
+  if (!resetTime) return null
+  const start = resetTime - windowMs
+  const t = now.value
+  if (t < start) return null
+  const dayNumber = Math.floor((t - start) / DAY_MS) + 1
+  const totalDays = Math.max(1, Math.round(windowMs / DAY_MS))
+  return {
+    dayNumber: Math.min(dayNumber, totalDays),
+    totalDays,
+    // 分段进度条时，今天所在的分段下标（0-based）
+    dayIndex: segments > 0 ? Math.min(segments - 1, Math.floor((t - start) / DAY_MS)) : -1,
+    segments,
+  }
+}
+
+// 每周额度：7 天分段进度
+const weekProgress = computed(() => {
+  const reset = codingPlan.value?.weekly_next_reset ?? 0
+  return windowProgress(reset, 7 * DAY_MS, 7)
+})
+
+// 月度余额（MCP）：月度时间进度，窗口为重置时间回推一个自然月
+const monthProgress = computed(() => {
+  const reset = codingPlan.value?.mcp_next_reset ?? 0
+  if (!reset) return null
+  const end = new Date(reset)
+  const start = new Date(reset)
+  start.setMonth(start.getMonth() - 1)
+  const windowMs = end.getTime() - start.getTime()
+  return windowProgress(reset, windowMs)
+})
+
+const monthPct = computed(() => {
+  const p = monthProgress.value
+  if (!p) return 0
+  return Math.min(100, Math.round(p.dayNumber / p.totalDays * 100))
+})
+
 // 自动查询
 watch(() => props.apiKey, (key) => {
   if (key) {
@@ -165,11 +207,24 @@ watch(() => props.apiKey, (key) => {
             <span>已用 {{ codingPlan.weekly_percentage }}%</span>
             <span v-if="codingPlan.weekly_next_reset" class="countdown">{{ getCountdown(codingPlan.weekly_next_reset) }}</span>
           </div>
+          <!-- 周期天数进度（以重置时间回推 7 天为窗口） -->
+          <div v-if="weekProgress" class="week-days">
+            <div
+              v-for="d in 7"
+              :key="d"
+              :class="['day-seg', { past: d < weekProgress.dayNumber, today: d === weekProgress.dayNumber }]"
+              :title="`第 ${d} / 7 天`"
+            >{{ d }}</div>
+          </div>
+          <div v-if="weekProgress" class="quota-meta week-days-meta">
+            <span>本周第 <strong>{{ weekProgress.dayNumber }}</strong> / 7 天</span>
+            <span>周期还剩 <strong>{{ Math.max(1, 8 - weekProgress.dayNumber) }}</strong> 天</span>
+          </div>
         </div>
 
         <div v-if="codingPlan.mcp_total > 0" class="quota-item">
           <div class="quota-row">
-            <span class="quota-name">MCP 月度调用</span>
+            <span class="quota-name">月度余额 · MCP 调用</span>
             <span class="quota-value" :style="{ color: getBarColor(codingPlan.mcp_total > 0 ? Math.round(codingPlan.mcp_used / codingPlan.mcp_total * 100) : 0) }">
               {{ codingPlan.mcp_remaining }}次
             </span>
@@ -181,6 +236,16 @@ watch(() => props.apiKey, (key) => {
             <span>已用 {{ codingPlan.mcp_used }} / {{ codingPlan.mcp_total }} 次</span>
             <span v-if="codingPlan.mcp_next_reset" class="countdown">{{ getCountdown(codingPlan.mcp_next_reset) }}</span>
           </div>
+          <!-- 月度时间进度（重置时间回推一个自然月为窗口） -->
+          <template v-if="monthProgress">
+            <div class="bar-track month-track">
+              <div class="bar-fill month-fill" :style="{ width: monthPct + '%' }"></div>
+            </div>
+            <div class="quota-meta">
+              <span>本月第 <strong>{{ monthProgress.dayNumber }}</strong> / {{ monthProgress.totalDays }} 天</span>
+              <span>月度已过 {{ monthPct }}%</span>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -387,6 +452,57 @@ watch(() => props.apiKey, (key) => {
   justify-content: space-between;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.quota-meta strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* 周期天数分段进度条（7 段） */
+.week-days {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.day-seg {
+  flex: 1;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.day-seg.past {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.day-seg.today {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(56, 89, 255, 0.35);
+}
+
+.week-days-meta {
+  margin-top: 6px;
+}
+
+/* 月度时间进度条 */
+.month-track {
+  margin-top: 10px;
+}
+
+.month-fill {
+  background: var(--success);
 }
 
 .countdown {
