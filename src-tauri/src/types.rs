@@ -102,6 +102,8 @@ pub struct DayStats {
 pub struct ModelStats {
     pub model: String,
     pub source: String,
+    /// 供应商显示名（仅 Zcode 有；如 "Bigmodel - API Key"），空表示未知
+    pub provider: String,
     pub usage: UsageBucket,
 }
 

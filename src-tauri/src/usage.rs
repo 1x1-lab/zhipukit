@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 struct UsageRecord {
     date: String,
     model: String,
+    /// 供应商 ID（仅 Zcode 有，如 "builtin:bigmodel" 或自定义 UUID）
+    provider: String,
     usage: UsageBucket,
 }
 
@@ -55,7 +57,8 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
         ..Default::default()
     };
     let mut by_day: HashMap<String, DayStats> = HashMap::new();
-    let mut by_model: HashMap<(String, String), UsageBucket> = HashMap::new(); // (source, model)
+    let mut by_model: HashMap<(String, String, String), UsageBucket> = HashMap::new(); // (source, provider, model)
+    let provider_names = zcode_provider_names();
 
     // Zcode: rollout/model-io-*.jsonl
     let mut zcode_files = Vec::new();
@@ -138,10 +141,18 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
     dates.sort();
     result.by_day = dates.into_iter().filter_map(|d| by_day.remove(&d)).collect();
 
-    // 按总 token 降序输出模型聚合
+    // 按总 token 降序输出模型聚合（provider 显示为可读名称，未知名回退原始 ID）
     let mut models: Vec<ModelStats> = by_model
         .into_iter()
-        .map(|((source, model), usage)| ModelStats { model, source, usage })
+        .map(|((source, provider, model), usage)| ModelStats {
+            model,
+            source,
+            provider: provider_names
+                .get(&provider)
+                .cloned()
+                .unwrap_or(provider),
+            usage,
+        })
         .collect();
     models.sort_by(|a, b| b.usage.total().cmp(&a.usage.total()));
     result.by_model = models;
@@ -161,6 +172,31 @@ fn local_key(ts: &str, hourly: bool) -> Option<String> {
                 local.format("%Y-%m-%d").to_string()
             }
         })
+}
+
+/// 读取 Zcode config.json 的 provider id → 可读名称映射
+fn zcode_provider_names() -> HashMap<String, String> {
+    let Ok(home) = get_home_dir() else {
+        return HashMap::new();
+    };
+    let path = home.join(".zcode").join("v2").join("config.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    if let Some(providers) = raw.get("provider").and_then(|p| p.as_object()) {
+        for (id, val) in providers {
+            if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
+                if !name.is_empty() {
+                    map.insert(id.clone(), name.to_string());
+                }
+            }
+        }
+    }
+    map
 }
 
 /// YYYY-MM-DD 加一天，解析失败时返回原值
@@ -228,14 +264,21 @@ fn skip_by_mtime(path: &Path, cutoff: &Option<String>, hourly: bool) -> bool {
     mtime.as_str() < cutoff.as_str()
 }
 
-/// Zcode rollout 行: { model: { modelId }, completedAt, response: { usage: { inputTokens, ... } } }
+/// Zcode rollout 行: { model: { modelId, providerId }, completedAt, response: { usage: { inputTokens, ... } } }
 fn parse_zcode_line(v: &serde_json::Value) -> Option<UsageRecord> {
     let usage = v.get("response")?.get("usage")?;
-    let model = v.get("model")?.get("modelId")?.as_str()?.to_string();
+    let model = v.get("model")?;
+    let model_id = model.get("modelId")?.as_str()?.to_string();
+    let provider = model
+        .get("providerId")
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string();
     let date = v.get("completedAt")?.as_str()?.to_string();
     Some(UsageRecord {
         date,
-        model,
+        model: model_id,
+        provider,
         usage: UsageBucket {
             input: usage
                 .get("inputTokens")
@@ -268,6 +311,7 @@ fn parse_claude_line(v: &serde_json::Value) -> Option<UsageRecord> {
     Some(UsageRecord {
         date,
         model,
+        provider: String::new(),
         usage: UsageBucket {
             input: usage
                 .get("input_tokens")
@@ -299,7 +343,7 @@ fn process_file(
     parse_line: fn(&serde_json::Value) -> Option<UsageRecord>,
     source: &str,
     by_day: &mut HashMap<String, DayStats>,
-    by_model: &mut HashMap<(String, String), UsageBucket>,
+    by_model: &mut HashMap<(String, String, String), UsageBucket>,
     totals: &mut UsageBucket,
 ) {
     let Ok(file) = std::fs::File::open(path) else {
@@ -339,7 +383,11 @@ fn process_file(
         merge_bucket(totals, &rec.usage);
         merge_bucket(
             by_model
-                .entry((source.to_string(), rec.model.clone()))
+                .entry((
+                    source.to_string(),
+                    rec.provider.clone(),
+                    rec.model.clone(),
+                ))
                 .or_default(),
             &rec.usage,
         );
@@ -363,11 +411,12 @@ mod tests {
     fn parse_zcode_line_extracts_usage() {
         let v = serde_json::json!({
             "completedAt": "2026-09-07T22:20:03.405Z",
-            "model": { "modelId": "GLM-5.3" },
+            "model": { "modelId": "GLM-5.3", "providerId": "builtin:bigmodel" },
             "response": { "usage": { "inputTokens": 100, "outputTokens": 5, "cacheReadTokens": 50, "reasoningTokens": 10 } }
         });
         let rec = parse_zcode_line(&v).unwrap();
         assert_eq!(rec.model, "GLM-5.3");
+        assert_eq!(rec.provider, "builtin:bigmodel");
         assert_eq!(rec.usage.input, 100);
         assert_eq!(rec.usage.output, 5);
         assert_eq!(rec.usage.cache_read, 50);

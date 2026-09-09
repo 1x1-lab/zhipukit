@@ -31,6 +31,7 @@ interface DayStats {
 interface ModelStats {
   model: string
   source: string
+  provider: string
   usage: UsageBucket
 }
 
@@ -363,8 +364,11 @@ onMounted(() => load())
             </tr>
           </thead>
           <tbody>
-            <tr v-for="m in filteredModels" :key="m.source + m.model">
-              <td class="model-name">{{ m.model }}</td>
+            <tr v-for="m in filteredModels" :key="m.source + m.provider + m.model">
+              <td class="model-name">
+                {{ m.model }}
+                <span v-if="m.provider" class="provider-tag" :title="m.provider">{{ m.provider }}</span>
+              </td>
               <td>
                 <span :class="['source-tag', m.source]">{{ sourceLabel(m.source) }}</span>
               </td>
@@ -600,6 +604,23 @@ onMounted(() => load())
 
 .model-name {
   font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.provider-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: inherit;
+  background: var(--bg);
+  color: var(--text-secondary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .source-tag {
