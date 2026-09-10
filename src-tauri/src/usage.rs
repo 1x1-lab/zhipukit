@@ -1,7 +1,8 @@
 use crate::types::{DayStats, ModelStats, TokenStatsResult, UsageBucket};
 use crate::utils::get_home_dir;
 use chrono::{DateTime, Local, Utc};
-use std::collections::HashMap;
+use rusqlite::OpenFlags;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +27,7 @@ pub async fn query_token_stats(
 
 fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsResult, String> {
     let home = get_home_dir()?;
+    let zcode_db = home.join(".zcode").join("cli").join("db").join("db.sqlite");
     let zcode_dir = home.join(".zcode").join("cli").join("rollout");
     let claude_dir = home.join(".claude").join("projects");
 
@@ -51,7 +53,7 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
     };
 
     let mut result = TokenStatsResult {
-        zcode_detected: zcode_dir.exists(),
+        zcode_detected: zcode_db.exists() || zcode_dir.exists(),
         claude_detected: claude_dir.exists(),
         granularity: if hourly { "hour" } else { "day" }.to_string(),
         ..Default::default()
@@ -60,26 +62,45 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
     let mut by_model: HashMap<(String, String, String), UsageBucket> = HashMap::new(); // (source, provider, model)
     let provider_names = zcode_provider_names();
 
-    // Zcode: rollout/model-io-*.jsonl
-    let mut zcode_files = Vec::new();
-    if zcode_dir.exists() {
-        collect_jsonl_files(&zcode_dir, "model-io-", &mut zcode_files);
-    }
-    for f in &zcode_files {
-        if skip_by_mtime(f, &cutoff, hourly) {
-            continue;
-        }
-        result.zcode_sessions += 1;
-        process_file(
-            f,
+    // Zcode 首选 sqlite 数据库（权威数据源，rollout jsonl 只含少量请求样本）；
+    // 数据库不存在或读取失败时回退 jsonl，两者记录重叠，不可同时统计
+    let mut zcode_from_db = false;
+    if zcode_db.exists() {
+        match scan_zcode_db(
+            &zcode_db,
             &cutoff,
             hourly,
-            parse_zcode_line,
-            "zcode",
             &mut by_day,
             &mut by_model,
             &mut result.totals_zcode,
-        );
+            &mut result.zcode_sessions,
+        ) {
+            Ok(()) => zcode_from_db = true,
+            Err(e) => log::warn!("读取 Zcode 用量数据库失败({})，回退 rollout jsonl 扫描", e),
+        }
+    }
+
+    if !zcode_from_db {
+        let mut zcode_files = Vec::new();
+        if zcode_dir.exists() {
+            collect_jsonl_files(&zcode_dir, "model-io-", &mut zcode_files);
+        }
+        for f in &zcode_files {
+            if skip_by_mtime(f, &cutoff, hourly) {
+                continue;
+            }
+            result.zcode_sessions += 1;
+            process_file(
+                f,
+                &cutoff,
+                hourly,
+                parse_zcode_line,
+                "zcode",
+                &mut by_day,
+                &mut by_model,
+                &mut result.totals_zcode,
+            );
+        }
     }
 
     // Claude Code: projects/**/*.jsonl
@@ -139,7 +160,10 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
     }
     let mut dates: Vec<String> = by_day.keys().cloned().collect();
     dates.sort();
-    result.by_day = dates.into_iter().filter_map(|d| by_day.remove(&d)).collect();
+    result.by_day = dates
+        .into_iter()
+        .filter_map(|d| by_day.remove(&d))
+        .collect();
 
     // 按总 token 降序输出模型聚合（provider 显示为可读名称，未知名回退原始 ID）
     let mut models: Vec<ModelStats> = by_model
@@ -147,10 +171,7 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
         .map(|((source, provider, model), usage)| ModelStats {
             model,
             source,
-            provider: provider_names
-                .get(&provider)
-                .cloned()
-                .unwrap_or(provider),
+            provider: provider_names.get(&provider).cloned().unwrap_or(provider),
             usage,
         })
         .collect();
@@ -162,16 +183,14 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
 
 /// ISO 时间戳转本地时区时间档 key（按天 "YYYY-MM-DD" 或按小时 "YYYY-MM-DD HH:00"）
 fn local_key(ts: &str, hourly: bool) -> Option<String> {
-    DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|dt| {
-            let local = dt.with_timezone(&Local);
-            if hourly {
-                local.format("%Y-%m-%d %H:00").to_string()
-            } else {
-                local.format("%Y-%m-%d").to_string()
-            }
-        })
+    DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+        let local = dt.with_timezone(&Local);
+        if hourly {
+            local.format("%Y-%m-%d %H:00").to_string()
+        } else {
+            local.format("%Y-%m-%d").to_string()
+        }
+    })
 }
 
 /// 读取 Zcode config.json 的 provider id → 可读名称映射
@@ -335,6 +354,80 @@ fn parse_claude_line(v: &serde_json::Value) -> Option<UsageRecord> {
     })
 }
 
+/// 从 db.sqlite 的 model_usage 表聚合 Zcode 用量（权威数据源）
+#[allow(clippy::too_many_arguments)]
+fn scan_zcode_db(
+    db_path: &Path,
+    cutoff: &Option<String>,
+    hourly: bool,
+    by_day: &mut HashMap<String, DayStats>,
+    by_model: &mut HashMap<(String, String, String), UsageBucket>,
+    totals: &mut UsageBucket,
+    sessions: &mut i64,
+) -> Result<(), String> {
+    // 只读打开；WAL 库在 -shm 文件缺失时只读打开可能失败，退回读写打开（仅查询，不写入）
+    let conn = rusqlite::Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .or_else(|_| {
+            rusqlite::Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        })
+        .map_err(|e| format!("打开数据库失败: {}", e))?;
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(1000));
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT started_at, session_id, provider_id, model_id, \
+             input_tokens, output_tokens, reasoning_tokens, \
+             cache_creation_input_tokens, cache_read_input_tokens \
+             FROM model_usage WHERE status = 'completed'",
+        )
+        .map_err(|e| format!("查询 model_usage 失败: {}", e))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| format!("查询 model_usage 失败: {}", e))?;
+
+    let mut seen_sessions: HashSet<String> = HashSet::new();
+    while let Some(row) = rows.next().map_err(|e| format!("读取记录失败: {}", e))? {
+        let started_ms: i64 = row.get(0).map_err(|e| format!("读取记录失败: {}", e))?;
+        let session_id: String = row.get(1).unwrap_or_default();
+        let provider: String = row.get(2).unwrap_or_default();
+        let model: String = row.get(3).unwrap_or_default();
+        let input: i64 = row.get(4).unwrap_or(0);
+        let output: i64 = row.get(5).unwrap_or(0);
+        let reasoning: i64 = row.get(6).unwrap_or(0);
+        let cache_write: i64 = row.get(7).unwrap_or(0);
+        let cache_read: i64 = row.get(8).unwrap_or(0);
+        let Some(dt) = DateTime::<Utc>::from_timestamp_millis(started_ms) else {
+            continue;
+        };
+        let merged = merge_record(
+            UsageRecord {
+                date: dt.to_rfc3339(),
+                model,
+                provider,
+                usage: UsageBucket {
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    reasoning,
+                    requests: 1,
+                },
+            },
+            cutoff,
+            hourly,
+            "zcode",
+            by_day,
+            by_model,
+            totals,
+        );
+        if merged {
+            seen_sessions.insert(session_id);
+        }
+    }
+    *sessions = seen_sessions.len() as i64;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_file(
     path: &Path,
@@ -356,42 +449,58 @@ fn process_file(
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        let Some(mut rec) = parse_line(&v) else {
+        let Some(rec) = parse_line(&v) else {
             continue;
         };
-        // 全零记录是流式占位行，跳过
-        if rec.usage.total() <= 0 || rec.model.is_empty() {
-            continue;
-        }
-        let Some(key) = local_key(&rec.date, hourly) else {
-            continue;
-        };
-        rec.date = key;
-        if let Some(c) = cutoff {
-            if rec.date.as_str() < c.as_str() {
-                continue;
-            }
-        }
-
-        let day = by_day.entry(rec.date).or_default();
-        let bucket = if source == "zcode" {
-            &mut day.zcode
-        } else {
-            &mut day.claude
-        };
-        merge_bucket(bucket, &rec.usage);
-        merge_bucket(totals, &rec.usage);
-        merge_bucket(
-            by_model
-                .entry((
-                    source.to_string(),
-                    rec.provider.clone(),
-                    rec.model.clone(),
-                ))
-                .or_default(),
-            &rec.usage,
-        );
+        merge_record(rec, cutoff, hourly, source, by_day, by_model, totals);
     }
+}
+
+/// 将单条用量记录聚合进时间档/模型/总计；返回是否被计入（调用方用于会话计数）
+#[allow(clippy::too_many_arguments)]
+fn merge_record(
+    rec: UsageRecord,
+    cutoff: &Option<String>,
+    hourly: bool,
+    source: &str,
+    by_day: &mut HashMap<String, DayStats>,
+    by_model: &mut HashMap<(String, String, String), UsageBucket>,
+    totals: &mut UsageBucket,
+) -> bool {
+    // 全零记录是流式占位行，跳过
+    if rec.usage.total() <= 0 || rec.model.is_empty() {
+        return false;
+    }
+    let Some(date) = local_key(&rec.date, hourly) else {
+        return false;
+    };
+    if let Some(c) = cutoff {
+        if date.as_str() < c.as_str() {
+            return false;
+        }
+    }
+    let UsageRecord {
+        model,
+        provider,
+        usage,
+        ..
+    } = rec;
+
+    let day = by_day.entry(date).or_default();
+    let bucket = if source == "zcode" {
+        &mut day.zcode
+    } else {
+        &mut day.claude
+    };
+    merge_bucket(bucket, &usage);
+    merge_bucket(totals, &usage);
+    merge_bucket(
+        by_model
+            .entry((source.to_string(), provider, model))
+            .or_default(),
+        &usage,
+    );
+    true
 }
 
 fn merge_bucket(dst: &mut UsageBucket, src: &UsageBucket) {
@@ -424,7 +533,9 @@ mod tests {
         assert_eq!(rec.usage.total(), 165);
         assert_eq!(rec.date, "2026-09-07T22:20:03.405Z");
         // 时间档 key：按天 / 按小时
-        assert!(local_key(&rec.date, false).unwrap().starts_with("2026-09-0"));
+        assert!(local_key(&rec.date, false)
+            .unwrap()
+            .starts_with("2026-09-0"));
         assert!(local_key(&rec.date, true).unwrap().contains(":00"));
     }
 
@@ -467,5 +578,78 @@ mod tests {
         assert_eq!(next_hour("2026-09-08 05:00"), "2026-09-08 06:00");
         assert_eq!(next_hour("2026-09-08 23:00"), "2026-09-09 00:00");
         assert_eq!(next_hour("bad"), "bad");
+    }
+
+    #[test]
+    fn scan_zcode_db_aggregates_model_usage() {
+        let db = std::env::temp_dir().join(format!(
+            "token-tool-usage-test-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&db);
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE model_usage (
+                    id text primary key,
+                    session_id text not null,
+                    provider_id text not null,
+                    model_id text not null,
+                    status text not null,
+                    started_at integer not null,
+                    input_tokens integer not null default 0,
+                    output_tokens integer not null default 0,
+                    reasoning_tokens integer not null default 0,
+                    cache_creation_input_tokens integer not null default 0,
+                    cache_read_input_tokens integer not null default 0
+                );",
+            )
+            .unwrap();
+            let now_ms = Utc::now().timestamp_millis();
+            let insert = |id: &str, session: &str, status: &str, tokens: [i64; 5]| {
+                conn.execute(
+                    "INSERT INTO model_usage (id, session_id, provider_id, model_id, status, \
+                     started_at, input_tokens, output_tokens, reasoning_tokens, \
+                     cache_creation_input_tokens, cache_read_input_tokens) \
+                     VALUES (?1, ?2, 'builtin:bigmodel', 'GLM-5.3', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        id, session, status, now_ms, tokens[0], tokens[1], tokens[2], tokens[3],
+                        tokens[4]
+                    ],
+                )
+                .unwrap();
+            };
+            insert("r1", "s1", "completed", [100, 5, 10, 0, 50]);
+            insert("r2", "s1", "completed", [200, 7, 0, 0, 0]);
+            // error 状态与全零记录不计入
+            insert("r3", "s2", "error", [999, 999, 0, 0, 0]);
+            insert("r4", "s2", "completed", [0, 0, 0, 0, 0]);
+        }
+
+        let mut by_day = HashMap::new();
+        let mut by_model = HashMap::new();
+        let mut totals = UsageBucket::default();
+        let mut sessions = 0i64;
+        scan_zcode_db(
+            &db,
+            &None,
+            false,
+            &mut by_day,
+            &mut by_model,
+            &mut totals,
+            &mut sessions,
+        )
+        .unwrap();
+
+        assert_eq!(totals.input, 300);
+        assert_eq!(totals.output, 12);
+        assert_eq!(totals.cache_read, 50);
+        assert_eq!(totals.reasoning, 10);
+        assert_eq!(totals.requests, 2);
+        assert_eq!(sessions, 1); // 只有 s1 有计入的记录
+        assert_eq!(by_model.len(), 1);
+        assert_eq!(by_day.len(), 1);
+
+        let _ = std::fs::remove_file(&db);
     }
 }
