@@ -163,6 +163,12 @@ fn scan_token_stats(days: Option<u64>, hours: Option<u64>) -> Result<TokenStatsR
     result.by_day = dates
         .into_iter()
         .filter_map(|d| by_day.remove(&d))
+        .map(|mut d| {
+            // 当日模型明细同样按总 token 降序
+            d.models
+                .sort_by(|a, b| b.usage.total().cmp(&a.usage.total()));
+            d
+        })
         .collect();
 
     // 按总 token 降序输出模型聚合（provider 显示为可读名称，未知名回退原始 ID）
@@ -496,10 +502,25 @@ fn merge_record(
     merge_bucket(totals, &usage);
     merge_bucket(
         by_model
-            .entry((source.to_string(), provider, model))
+            .entry((source.to_string(), provider.clone(), model.clone()))
             .or_default(),
         &usage,
     );
+
+    // 当日按模型明细（前端按模型过滤时间轴用）
+    match day
+        .models
+        .iter_mut()
+        .find(|m| m.model == model && m.provider == provider && m.source == source)
+    {
+        Some(m) => merge_bucket(&mut m.usage, &usage),
+        None => day.models.push(ModelStats {
+            model,
+            provider,
+            source: source.to_string(),
+            usage,
+        }),
+    }
     true
 }
 
@@ -649,6 +670,15 @@ mod tests {
         assert_eq!(sessions, 1); // 只有 s1 有计入的记录
         assert_eq!(by_model.len(), 1);
         assert_eq!(by_day.len(), 1);
+
+        // 当日按模型明细：两笔合并到同一模型
+        let day = by_day.values().next().unwrap();
+        assert_eq!(day.zcode.input, 300);
+        assert_eq!(day.models.len(), 1);
+        assert_eq!(day.models[0].model, "GLM-5.3");
+        assert_eq!(day.models[0].provider, "builtin:bigmodel");
+        assert_eq!(day.models[0].usage.input, 300);
+        assert_eq!(day.models[0].usage.requests, 2);
 
         let _ = std::fs::remove_file(&db);
     }

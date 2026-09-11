@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -26,6 +26,7 @@ interface DayStats {
   date: string
   zcode: UsageBucket
   claude: UsageBucket
+  models: ModelStats[]
 }
 
 interface ModelStats {
@@ -67,6 +68,48 @@ const rangeKey = ref<RangeKey>('h12')
 const customDays = ref(7)
 const result = ref<TokenStatsResult | null>(null)
 const loading = ref(false)
+
+// 模型多选筛选（key = source|provider|model，空数组表示不过滤）
+const selectedModels = ref<string[]>([])
+const modelMenuOpen = ref(false)
+const modelMenuRef = ref<HTMLElement | null>(null)
+const menuStyle = ref<Record<string, string>>({})
+
+/** 打开时测量按钮位置，自动选择左/右对齐与上/下弹出，避免被窗口边缘遮挡 */
+function positionMenu() {
+  const btn = modelMenuRef.value?.querySelector('.model-toggle')
+  if (!(btn instanceof HTMLElement)) return
+  const rect = btn.getBoundingClientRect()
+  const MENU_W = 320
+  const MENU_H = 280
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const style: Record<string, string> = {}
+
+  // 水平：右侧空间够则左对齐，否则右对齐；两侧都不够时向较大一侧对齐并压缩宽度
+  const spaceRight = vw - rect.left
+  const spaceLeft = rect.right
+  if (spaceRight >= MENU_W) {
+    style.left = '0'
+  } else if (spaceLeft >= MENU_W) {
+    style.right = '0'
+  } else if (spaceRight >= spaceLeft) {
+    style.left = '0'
+    style.maxWidth = `${Math.max(200, spaceRight - 8)}px`
+  } else {
+    style.right = '0'
+    style.maxWidth = `${Math.max(200, spaceLeft - 8)}px`
+  }
+
+  // 垂直：下方空间不足时向上弹出
+  style[rect.bottom + MENU_H > vh - 8 ? 'bottom' : 'top'] = 'calc(100% + 6px)'
+  menuStyle.value = style
+}
+
+function toggleModelMenu() {
+  modelMenuOpen.value = !modelMenuOpen.value
+  if (modelMenuOpen.value) positionMenu()
+}
 
 const sourceOptions: { value: Source; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -120,14 +163,39 @@ async function load() {
       // 'all'：全部时间
     }
     result.value = await invoke<TokenStatsResult>('query_token_stats', { days, hours })
+    // 剔除当前范围已不存在的选中项，避免过滤出全空数据
+    const keys = new Set(result.value.by_model.map(modelKey))
+    selectedModels.value = selectedModels.value.filter(k => keys.has(k))
   } catch (e) {
     toast.showError(String(e))
   }
   loading.value = false
 }
 
-/** 当前数据源筛选下的每日 bucket */
+function modelKey(m: ModelStats): string {
+  return `${m.source}|${m.provider}|${m.model}`
+}
+
+const modelOptions = computed(() =>
+  (result.value?.by_model ?? []).map(m => ({
+    key: modelKey(m),
+    model: m.model,
+    provider: m.provider,
+    source: m.source,
+  }))
+)
+
+function sourceMatch(s: string): boolean {
+  return source.value === 'all' || s === source.value
+}
+
+/** 当前数据源 + 模型筛选下的每日 bucket */
 function bucketOfDay(d: DayStats): UsageBucket {
+  if (selectedModels.value.length > 0) {
+    return d.models
+      .filter(m => sourceMatch(m.source) && selectedModels.value.includes(modelKey(m)))
+      .reduce((acc, m) => addBuckets(acc, m.usage), emptyBucket())
+  }
   if (source.value === 'zcode') return d.zcode
   if (source.value === 'claude') return d.claude
   return addBuckets(d.zcode, d.claude)
@@ -136,6 +204,11 @@ function bucketOfDay(d: DayStats): UsageBucket {
 const totals = computed<UsageBucket>(() => {
   if (!result.value) return emptyBucket()
   const r = result.value
+  if (selectedModels.value.length > 0) {
+    return r.by_model
+      .filter(m => sourceMatch(m.source) && selectedModels.value.includes(modelKey(m)))
+      .reduce((acc, m) => addBuckets(acc, m.usage), emptyBucket())
+  }
   if (source.value === 'zcode') return r.totals_zcode
   if (source.value === 'claude') return r.totals_claude
   return addBuckets(r.totals_zcode, r.totals_claude)
@@ -192,9 +265,11 @@ const chartOption = computed(() => {
     ;(series[series.length - 1] as { itemStyle: Record<string, unknown> }).itemStyle.borderRadius = [3, 3, 0, 0]
   }
 
+  // 数据档位多时压缩底部留白给滚动条
+  const crowded = data.length > 30
   const option: Record<string, unknown> = {
     animationDuration: 300,
-    grid: { left: 8, right: 8, top: 32, bottom: 4, containLabel: true },
+    grid: { left: 8, right: 8, top: 32, bottom: crowded ? 24 : 4, containLabel: true },
     legend: {
       top: 0,
       left: 0,
@@ -239,17 +314,34 @@ const chartOption = computed(() => {
     series,
   }
 
-  // 时间跨度大时启用滚轮/拖拽缩放
-  if (data.length > 45) {
-    option.dataZoom = [{ type: 'inside', zoomOnMouseWheel: true, moveOnMouseWheel: true }]
+  // 数据档位多时启用滚轮缩放 + 底部滚动条，默认展示最近 30 档
+  if (crowded) {
+    option.dataZoom = [
+      { type: 'inside', zoomOnMouseWheel: true, moveOnMouseWheel: true },
+      {
+        type: 'slider',
+        height: 12,
+        bottom: 2,
+        showDetail: false,
+        startValue: Math.max(0, data.length - 30),
+        endValue: data.length - 1,
+        borderColor: 'transparent',
+        backgroundColor: 'rgba(128, 128, 128, 0.1)',
+        fillerColor: 'rgba(56, 89, 255, 0.15)',
+        moveHandleSize: 0,
+        handleStyle: { color: '#fff', borderColor: '#3859ff' },
+      },
+    ]
   }
   return option
 })
 
 const filteredModels = computed(() => {
   if (!result.value) return []
-  if (source.value === 'all') return result.value.by_model
-  return result.value.by_model.filter(m => m.source === source.value)
+  return result.value.by_model.filter(
+    m => sourceMatch(m.source)
+      && (selectedModels.value.length === 0 || selectedModels.value.includes(modelKey(m)))
+  )
 })
 
 function fmt(n: number): string {
@@ -263,7 +355,18 @@ function sourceLabel(s: string): string {
   return s === 'zcode' ? 'Zcode' : 'Claude Code'
 }
 
-onMounted(() => load())
+function onDocClick(e: MouseEvent) {
+  if (modelMenuOpen.value && modelMenuRef.value && !modelMenuRef.value.contains(e.target as Node)) {
+    modelMenuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  document.addEventListener('click', onDocClick)
+})
+
+onUnmounted(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <template>
@@ -314,6 +417,32 @@ onMounted(() => load())
             @keyup.enter="load"
           />
           <span class="custom-unit">天</span>
+        </div>
+
+        <!-- 模型多选筛选 -->
+        <div v-if="modelOptions.length" ref="modelMenuRef" class="model-filter">
+          <button class="days-select model-toggle" @click.stop="toggleModelMenu">
+            模型{{ selectedModels.length ? ` · ${selectedModels.length}` : '' }}
+            <svg
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+              class="chev" :class="{ open: modelMenuOpen }"
+            ><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div v-if="modelMenuOpen" class="model-menu" :style="menuStyle" @click.stop>
+            <div class="model-menu-head">
+              <span class="model-menu-title">已选 {{ selectedModels.length }}/{{ modelOptions.length }}</span>
+              <button class="model-clear" :disabled="!selectedModels.length" @click="selectedModels = []">清除</button>
+            </div>
+            <div class="model-list">
+              <label v-for="opt in modelOptions" :key="opt.key" class="model-option">
+                <input v-model="selectedModels" type="checkbox" :value="opt.key" class="model-check" />
+                <span class="model-name">{{ opt.model }}</span>
+                <span :class="['source-tag', opt.source]">{{ sourceLabel(opt.source) }}</span>
+                <span v-if="opt.provider" class="model-provider" :title="opt.provider">{{ opt.provider }}</span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -470,6 +599,108 @@ onMounted(() => load())
   color: var(--text-secondary);
 }
 
+/* ---- 模型多选筛选 ---- */
+.model-filter {
+  position: relative;
+}
+
+.model-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chev {
+  transition: transform 0.15s;
+}
+
+.chev.open {
+  transform: rotate(180deg);
+}
+
+.model-menu {
+  position: absolute;
+  z-index: 40;
+  width: 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  padding: 8px;
+}
+
+.model-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.model-menu-title {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.model-clear {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.model-clear:disabled {
+  color: var(--text-secondary);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.model-list {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.model-option:hover {
+  background: var(--bg);
+}
+
+.model-check {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.model-provider {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
 .loading-block {
   display: flex;
   flex-direction: column;
@@ -552,7 +783,7 @@ onMounted(() => load())
 }
 
 .chart-canvas {
-  height: 200px;
+  height: 280px;
   width: 100%;
 }
 
@@ -560,7 +791,31 @@ onMounted(() => load())
 .table-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  overflow: hidden;
+  /* 列不换行导致超宽时显示横向滚动条而不是裁切 */
+  overflow-x: auto;
+}
+
+/* 细滚动条（表格横向 + 模型下拉纵向） */
+.table-card::-webkit-scrollbar,
+.model-list::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.table-card::-webkit-scrollbar-track,
+.model-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-card::-webkit-scrollbar-thumb,
+.model-list::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 3px;
+}
+
+.table-card::-webkit-scrollbar-thumb:hover,
+.model-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.55);
 }
 
 .model-table {

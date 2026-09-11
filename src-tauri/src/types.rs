@@ -96,6 +96,8 @@ pub struct DayStats {
     pub date: String,
     pub zcode: UsageBucket,
     pub claude: UsageBucket,
+    /// 当日按模型明细，供前端按模型过滤
+    pub models: Vec<ModelStats>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
