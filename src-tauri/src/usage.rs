@@ -290,6 +290,8 @@ fn skip_by_mtime(path: &Path, cutoff: &Option<String>, hourly: bool) -> bool {
 }
 
 /// Zcode rollout 行: { model: { modelId, providerId }, completedAt, response: { usage: { inputTokens, ... } } }
+/// 归一化格式的 inputTokens 已包含缓存部分（totalTokens = inputTokens + outputTokens），
+/// 与 Claude 口径对齐，入库前拆出净输入
 fn parse_zcode_line(v: &serde_json::Value) -> Option<UsageRecord> {
     let usage = v.get("response")?.get("usage")?;
     let model = v.get("model")?;
@@ -300,24 +302,30 @@ fn parse_zcode_line(v: &serde_json::Value) -> Option<UsageRecord> {
         .unwrap_or("")
         .to_string();
     let date = v.get("completedAt")?.as_str()?.to_string();
+    let input_raw = usage
+        .get("inputTokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let cache_read = usage
+        .get("cacheReadTokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let cache_write = usage
+        .get("cacheWriteTokens")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
     Some(UsageRecord {
         date,
         model: model_id,
         provider,
         usage: UsageBucket {
-            input: usage
-                .get("inputTokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0),
+            input: (input_raw - cache_read - cache_write).max(0),
             output: usage
                 .get("outputTokens")
                 .and_then(|x| x.as_i64())
                 .unwrap_or(0),
-            cache_read: usage
-                .get("cacheReadTokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0),
-            cache_write: 0,
+            cache_read,
+            cache_write,
             reasoning: usage
                 .get("reasoningTokens")
                 .and_then(|x| x.as_i64())
@@ -405,13 +413,15 @@ fn scan_zcode_db(
         let Some(dt) = DateTime::<Utc>::from_timestamp_millis(started_ms) else {
             continue;
         };
+        // input_tokens 已包含缓存部分（totalTokens = input_tokens + output_tokens），
+        // 与 Claude 口径对齐，拆出净输入；异常数据 input < 缓存时钳为 0
         let merged = merge_record(
             UsageRecord {
                 date: dt.to_rfc3339(),
                 model,
                 provider,
                 usage: UsageBucket {
-                    input,
+                    input: (input - cache_read - cache_write).max(0),
                     output,
                     cache_read,
                     cache_write,
@@ -547,11 +557,12 @@ mod tests {
         let rec = parse_zcode_line(&v).unwrap();
         assert_eq!(rec.model, "GLM-5.3");
         assert_eq!(rec.provider, "builtin:bigmodel");
-        assert_eq!(rec.usage.input, 100);
+        // inputTokens 含缓存，净输入 = 100 - 50
+        assert_eq!(rec.usage.input, 50);
         assert_eq!(rec.usage.output, 5);
         assert_eq!(rec.usage.cache_read, 50);
         assert_eq!(rec.usage.reasoning, 10);
-        assert_eq!(rec.usage.total(), 165);
+        assert_eq!(rec.usage.total(), 105);
         assert_eq!(rec.date, "2026-09-07T22:20:03.405Z");
         // 时间档 key：按天 / 按小时
         assert!(local_key(&rec.date, false)
@@ -645,6 +656,8 @@ mod tests {
             // error 状态与全零记录不计入
             insert("r3", "s2", "error", [999, 999, 0, 0, 0]);
             insert("r4", "s2", "completed", [0, 0, 0, 0, 0]);
+            // input < 缓存时净输入钳为 0
+            insert("r5", "s2", "completed", [30, 0, 0, 0, 40]);
         }
 
         let mut by_day = HashMap::new();
@@ -662,23 +675,24 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(totals.input, 300);
+        // r1 净输入 = 100 - 50，r5 净输入 = max(0, 30 - 40)
+        assert_eq!(totals.input, 250);
         assert_eq!(totals.output, 12);
-        assert_eq!(totals.cache_read, 50);
+        assert_eq!(totals.cache_read, 90);
         assert_eq!(totals.reasoning, 10);
-        assert_eq!(totals.requests, 2);
-        assert_eq!(sessions, 1); // 只有 s1 有计入的记录
+        assert_eq!(totals.requests, 3);
+        assert_eq!(sessions, 2); // s1 与 s2（r5）均有计入的记录
         assert_eq!(by_model.len(), 1);
         assert_eq!(by_day.len(), 1);
 
-        // 当日按模型明细：两笔合并到同一模型
+        // 当日按模型明细：三笔合并到同一模型
         let day = by_day.values().next().unwrap();
-        assert_eq!(day.zcode.input, 300);
+        assert_eq!(day.zcode.input, 250);
         assert_eq!(day.models.len(), 1);
         assert_eq!(day.models[0].model, "GLM-5.3");
         assert_eq!(day.models[0].provider, "builtin:bigmodel");
-        assert_eq!(day.models[0].usage.input, 300);
-        assert_eq!(day.models[0].usage.requests, 2);
+        assert_eq!(day.models[0].usage.input, 250);
+        assert_eq!(day.models[0].usage.requests, 3);
 
         let _ = std::fs::remove_file(&db);
     }

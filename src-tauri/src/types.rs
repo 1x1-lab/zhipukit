@@ -77,17 +77,20 @@ pub struct ZCodeProviderInput {
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct UsageBucket {
+    /// 不含缓存的净输入（Zcode 的 input_tokens 已在采集端拆出缓存部分）
     pub input: i64,
+    /// 已包含 reasoning（两个数据源的 reasoning 均为 output 子集）
     pub output: i64,
     pub cache_read: i64,
     pub cache_write: i64,
+    /// 仅展示用，不计入 total（已含在 output 内）
     pub reasoning: i64,
     pub requests: i64,
 }
 
 impl UsageBucket {
     pub fn total(&self) -> i64 {
-        self.input + self.output + self.cache_read + self.cache_write + self.reasoning
+        self.input + self.output + self.cache_read + self.cache_write
     }
 }
 

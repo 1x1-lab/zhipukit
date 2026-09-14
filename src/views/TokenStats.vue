@@ -54,13 +54,12 @@ type BucketKey = 'input' | 'output' | 'cache_read' | 'cache_write' | 'reasoning'
 
 const AXIS_COLOR = '#64748b'
 
-// 图表分段（堆叠顺序 = 数组顺序，自下而上）
+// 图表分段（堆叠顺序 = 数组顺序，自下而上）；reasoning 含在 output 内，不单独分段
 const CATEGORIES: { key: BucketKey; label: string; color: string }[] = [
   { key: 'input', label: 'Input', color: '#3859ff' },
   { key: 'output', label: 'Output', color: '#8b5cf6' },
   { key: 'cache_read', label: '缓存读取', color: '#14b8a6' },
   { key: 'cache_write', label: '缓存写入', color: '#f59e0b' },
-  { key: 'reasoning', label: 'Reasoning', color: '#ec4899' },
 ]
 
 const source = ref<Source>('all')
@@ -143,7 +142,8 @@ function addBuckets(a: UsageBucket, b: UsageBucket): UsageBucket {
 }
 
 function bucketTotal(b: UsageBucket): number {
-  return b.input + b.output + b.cache_read + b.cache_write + b.reasoning
+  // reasoning 已含在 output 内，不重复计入
+  return b.input + b.output + b.cache_read + b.cache_write
 }
 
 async function load() {
