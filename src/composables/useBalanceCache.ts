@@ -22,6 +22,14 @@ export interface CodingPlanInfo {
   mcp_used: number
   mcp_remaining: number
   mcp_next_reset: number
+  /** V3（积分制）5 小时窗口的积分总量 / 已用 / 剩余，V2 为 0（旧缓存可能缺失该字段） */
+  hour5_credits_total?: number
+  hour5_credits_used?: number
+  hour5_credits_remaining?: number
+  /** V3（积分制）每周窗口的积分总量 / 已用 / 剩余，V2 为 0 */
+  weekly_credits_total?: number
+  weekly_credits_used?: number
+  weekly_credits_remaining?: number
 }
 
 interface CacheEntry<T> {
@@ -165,39 +173,9 @@ export async function setupListeners(): Promise<() => void> {
     syncTrayData()
   })
 
-  const unlistenPlan = await listen<Record<string, unknown>>('plan-update', (e) => {
-    const data = e.payload
-    const limits = (data.limits as Array<Record<string, unknown>>) ?? []
-    const level = (data.level as string) ?? 'unknown'
-
-    let hour5_percentage = 0, hour5_next_reset = 0
-    let weekly_percentage = 0, weekly_next_reset = 0
-    let mcp_total = 0, mcp_used = 0, mcp_remaining = 0, mcp_next_reset = 0
-    let tokensIdx = 0
-
-    for (const lim of limits) {
-      const t = (lim.type as string) ?? ''
-      const pct = (lim.percentage as number) ?? 0
-      const nrt = (lim.nextResetTime as number) ?? 0
-
-      if (t === 'TIME_LIMIT') {
-        mcp_total = (lim.usage as number) ?? 0
-        mcp_used = (lim.currentValue as number) ?? 0
-        mcp_remaining = (lim.remaining as number) ?? 0
-        mcp_next_reset = nrt
-      } else if (t === 'TOKENS_LIMIT') {
-        if (tokensIdx === 0) { hour5_percentage = pct; hour5_next_reset = nrt }
-        else { weekly_percentage = pct; weekly_next_reset = nrt }
-        tokensIdx++
-      }
-    }
-
-    const plan: CodingPlanInfo = {
-      level, hour5_percentage, hour5_next_reset,
-      weekly_percentage, weekly_next_reset,
-      mcp_total, mcp_used, mcp_remaining, mcp_next_reset,
-    }
-    writeCache({ plan })
+  // 自动刷新由 Rust 端用 query_coding_plan 同一份逻辑解析，载荷即 CodingPlanInfo
+  const unlistenPlan = await listen<CodingPlanInfo>('plan-update', (e) => {
+    writeCache({ plan: e.payload })
     syncTrayData()
   })
 

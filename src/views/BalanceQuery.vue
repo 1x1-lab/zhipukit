@@ -57,14 +57,21 @@ function fmt(v: number): string {
   return parseFloat(v.toFixed(4)).toString()
 }
 
+// 文案对齐官方套餐名：GLM Coding Lite / Pro / Max
 function getLevelLabel(level: string): string {
-  const map: Record<string, string> = { free: '免费版', starter: '入门版', pro: '专业版', max: '旗舰版' }
+  const map: Record<string, string> = { free: '免费版', starter: '入门版', lite: 'Lite', pro: 'Pro', max: 'Max' }
   return map[level] || level
 }
 
+// 金牌 Max / 银牌 Pro / 铜牌 Lite
 function getLevelStyle(level: string): string {
-  if (level === 'max') return 'level-max'
-  return ''
+  return ['max', 'pro', 'lite'].includes(level) ? `level-${level}` : ''
+}
+
+// V3（积分制）附带积分用量，V2 仅百分比；旧缓存没有积分字段
+function usedLabel(pct: number, creditsTotal?: number, creditsUsed?: number): string {
+  if (creditsTotal && creditsTotal > 0) return `已用 ${creditsUsed ?? 0} / ${creditsTotal} 积分 · ${pct}%`
+  return `已用 ${pct}%`
 }
 
 function getBarColor(pct: number): string {
@@ -188,7 +195,7 @@ watch(() => props.apiKey, (key) => {
             <div class="bar-fill" :style="{ width: codingPlan.hour5_percentage + '%', background: getBarColor(codingPlan.hour5_percentage) }"></div>
           </div>
           <div class="quota-meta">
-            <span>已用 {{ codingPlan.hour5_percentage }}%</span>
+            <span>{{ usedLabel(codingPlan.hour5_percentage, codingPlan.hour5_credits_total, codingPlan.hour5_credits_used) }}</span>
             <span v-if="codingPlan.hour5_next_reset" class="countdown">{{ getCountdown(codingPlan.hour5_next_reset) }}</span>
           </div>
         </div>
@@ -204,7 +211,7 @@ watch(() => props.apiKey, (key) => {
             <div class="bar-fill" :style="{ width: codingPlan.weekly_percentage + '%', background: getBarColor(codingPlan.weekly_percentage) }"></div>
           </div>
           <div class="quota-meta">
-            <span>已用 {{ codingPlan.weekly_percentage }}%</span>
+            <span>{{ usedLabel(codingPlan.weekly_percentage, codingPlan.weekly_credits_total, codingPlan.weekly_credits_used) }}</span>
             <span v-if="codingPlan.weekly_next_reset" class="countdown">{{ getCountdown(codingPlan.weekly_next_reset) }}</span>
           </div>
           <!-- 周期天数进度（以重置时间回推 7 天为窗口） -->
@@ -393,10 +400,9 @@ watch(() => props.apiKey, (key) => {
   font-weight: 600;
 }
 
+/* 金牌 Max / 银牌 Pro / 铜牌 Lite */
 .level-badge.level-max {
-  background: linear-gradient(135deg, #b8860b 0%, #ffd700 25%, #fffacd 50%, #ffd700 75%, #b8860b 100%);
-  background-size: 200% 100%;
-  animation: goldShimmer 3s ease-in-out infinite;
+  background-image: linear-gradient(135deg, #b8860b 0%, #ffd700 25%, #fffacd 50%, #ffd700 75%, #b8860b 100%);
   color: #5c3d00;
   text-shadow: 0 1px 2px rgba(255, 215, 0, 0.6);
   box-shadow:
@@ -405,7 +411,34 @@ watch(() => props.apiKey, (key) => {
   border: 1px solid rgba(255, 215, 0, 0.6);
 }
 
-@keyframes goldShimmer {
+.level-badge.level-pro {
+  background-image: linear-gradient(135deg, #7c8a99 0%, #c8d0da 25%, #f4f7fa 50%, #c8d0da 75%, #7c8a99 100%);
+  color: #2f3a47;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 0 12px rgba(176, 190, 205, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(160, 175, 190, 0.7);
+}
+
+.level-badge.level-lite {
+  background-image: linear-gradient(135deg, #8c5a2b 0%, #cd7f32 25%, #f3c99a 50%, #cd7f32 75%, #8c5a2b 100%);
+  color: #3b2310;
+  text-shadow: 0 1px 2px rgba(255, 214, 170, 0.6);
+  box-shadow:
+    0 0 12px rgba(205, 127, 50, 0.4),
+    inset 0 1px 0 rgba(255, 240, 220, 0.4);
+  border: 1px solid rgba(205, 127, 50, 0.6);
+}
+
+.level-badge.level-max,
+.level-badge.level-pro,
+.level-badge.level-lite {
+  background-size: 200% 100%;
+  animation: medalShimmer 3s ease-in-out infinite;
+}
+
+@keyframes medalShimmer {
   0%, 100% { background-position: 100% 0; }
   50% { background-position: 0 0; }
 }

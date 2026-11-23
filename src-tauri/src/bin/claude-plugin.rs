@@ -866,7 +866,8 @@ async fn fetch_quota_data() -> Result<QuotaData, String> {
                                         data.mcp_next_reset =
                                             limit.get("nextResetTime").and_then(|v| v.as_i64());
                                     }
-                                    "TOKENS_LIMIT" => {
+                                    // V2 按量百分比（TOKENS_LIMIT）与 V3 积分制（CREDIT_LIMIT）窗口顺序相同
+                                    "TOKENS_LIMIT" | "CREDIT_LIMIT" => {
                                         let pct = limit
                                             .get("percentage")
                                             .and_then(|v| v.as_i64())

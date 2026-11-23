@@ -133,84 +133,7 @@ pub async fn query_coding_plan(
         .get("data")
         .ok_or_else(|| format!("响应中无 data 字段: {}", json))?;
 
-    let level = data
-        .get("level")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let limits = data
-        .get("limits")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    // 解析 limits: TIME_LIMIT (MCP月度), TOKENS_LIMIT (5小时 & 每周)
-    let mut hour5_percentage: i64 = 0;
-    let mut hour5_next_reset: i64 = 0;
-    let mut weekly_percentage: i64 = 0;
-    let mut weekly_next_reset: i64 = 0;
-    let mut mcp_total: i64 = 0;
-    let mut mcp_used: i64 = 0;
-    let mut mcp_remaining: i64 = 0;
-    let mut mcp_next_reset: i64 = 0;
-    let mut tokens_limit_count = 0;
-
-    for limit in &limits {
-        let limit_type = limit
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let percentage = limit
-            .get("percentage")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let next_reset = limit
-            .get("nextResetTime")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-
-        match limit_type {
-            "TIME_LIMIT" => {
-                mcp_total = limit
-                    .get("usage")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                mcp_used = limit
-                    .get("currentValue")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                mcp_remaining = limit
-                    .get("remaining")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                mcp_next_reset = next_reset;
-            }
-            "TOKENS_LIMIT" => {
-                if tokens_limit_count == 0 {
-                    hour5_percentage = percentage;
-                    hour5_next_reset = next_reset;
-                } else {
-                    weekly_percentage = percentage;
-                    weekly_next_reset = next_reset;
-                }
-                tokens_limit_count += 1;
-            }
-            _ => {}
-        }
-    }
-
-    let plan = CodingPlanInfo {
-        level,
-        hour5_percentage,
-        hour5_next_reset,
-        weekly_percentage,
-        weekly_next_reset,
-        mcp_total,
-        mcp_used,
-        mcp_remaining,
-        mcp_next_reset,
-    };
+    let plan = CodingPlanInfo::from_api(data);
 
     {
         let mut td = state.tray_data.lock().unwrap();
@@ -293,8 +216,10 @@ pub async fn start_auto_refresh(
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false)
                     {
-                        if let Some(data) = json.get("data").cloned() {
-                            let _ = app.emit("plan-update", &data);
+                        if let Some(data) = json.get("data") {
+                            // 与 query_coding_plan 共用同一份解析逻辑
+                            let plan = CodingPlanInfo::from_api(data);
+                            let _ = app.emit("plan-update", &plan);
                         }
                     }
                 }
