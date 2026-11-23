@@ -14,6 +14,9 @@ pub struct BalanceInfo {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CodingPlanInfo {
     pub level: String,
+    /// 套餐版本：V2 按量（TOKENS_LIMIT），V3 积分制（CREDIT_LIMIT）；未知或旧缓存为空
+    #[serde(default)]
+    pub plan_version: String,
     pub hour5_percentage: i64,
     pub hour5_next_reset: i64,
     pub weekly_percentage: i64,
@@ -69,14 +72,24 @@ impl CodingPlanInfo {
 
         let mut windows: Vec<QuotaLimit> = Vec::new();
         let mut mcp = QuotaLimit::default();
+        let mut has_credit_limit = false;
+        let mut has_v2_limit = false;
 
         if let Some(limits) = data.get("limits").and_then(|v| v.as_array()) {
             for item in limits {
                 let limit_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match limit_type {
-                    "TIME_LIMIT" => mcp = limit(item, true),
+                    "TIME_LIMIT" => {
+                        has_v2_limit = true;
+                        mcp = limit(item, true);
+                    }
                     // 只有 CREDIT_LIMIT 的 usage/currentValue/remaining 是积分用量
                     "TOKENS_LIMIT" | "CREDIT_LIMIT" => {
+                        if limit_type == "CREDIT_LIMIT" {
+                            has_credit_limit = true;
+                        } else {
+                            has_v2_limit = true;
+                        }
                         windows.push(limit(item, limit_type == "CREDIT_LIMIT"))
                     }
                     _ => {}
@@ -94,6 +107,14 @@ impl CodingPlanInfo {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
+            plan_version: if has_credit_limit {
+                "v3"
+            } else if has_v2_limit {
+                "v2"
+            } else {
+                ""
+            }
+            .to_string(),
             hour5_percentage: hour5.percentage,
             hour5_next_reset: hour5.next_reset,
             weekly_percentage: weekly.percentage,
@@ -257,6 +278,7 @@ mod tests {
         let plan = CodingPlanInfo::from_api(&serde_json::from_str(V3_CREDIT_PLAN).unwrap());
 
         assert_eq!(plan.level, "pro");
+        assert_eq!(plan.plan_version, "v3");
         assert_eq!(plan.hour5_percentage, 1);
         assert_eq!(plan.hour5_next_reset, 1795459844074);
         assert_eq!(
@@ -278,6 +300,7 @@ mod tests {
         let plan = CodingPlanInfo::from_api(&serde_json::from_str(V2_TOKENS_PLAN).unwrap());
 
         assert_eq!(plan.level, "max");
+        assert_eq!(plan.plan_version, "v2");
         assert_eq!(plan.hour5_percentage, 18);
         assert_eq!(plan.hour5_next_reset, 1795455522827);
         assert_eq!(plan.weekly_percentage, 36);
@@ -297,6 +320,7 @@ mod tests {
         let plan = CodingPlanInfo::from_api(&serde_json::json!({ "level": "lite" }));
 
         assert_eq!(plan.level, "lite");
+        assert_eq!(plan.plan_version, "");
         assert_eq!(
             (plan.hour5_percentage, plan.hour5_next_reset, plan.hour5_credits_total),
             (0, 0, 0)
@@ -314,6 +338,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.level, "pro");
+        assert_eq!(plan.plan_version, "");
         assert_eq!(plan.hour5_percentage, 1);
         assert_eq!(plan.hour5_credits_total, 0);
         assert_eq!(plan.weekly_credits_used, 0);

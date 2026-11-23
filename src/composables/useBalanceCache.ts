@@ -14,6 +14,8 @@ export interface BalanceInfo {
 
 export interface CodingPlanInfo {
   level: string
+  /** 套餐版本：v2 / v3；未知或旧缓存为空 */
+  plan_version?: string
   hour5_percentage: number
   hour5_next_reset: number
   weekly_percentage: number
