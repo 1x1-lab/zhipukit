@@ -2,6 +2,7 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useBalanceCache } from '../composables/useBalanceCache'
+import VersionMedal from '../components/VersionMedal.vue'
 
 const props = defineProps<{ apiKey: string; endpoint: string }>()
 
@@ -181,12 +182,8 @@ watch(() => props.apiKey, (key) => {
     <div v-if="codingPlan" class="section">
       <div class="section-head">
         <h3 class="section-title">Coding Plan</h3>
-        <span
-          v-if="codingPlan.plan_version"
-          :class="['version-badge', `version-${codingPlan.plan_version}`]"
-          :title="codingPlan.plan_version === 'v3' ? 'V3 · 积分制套餐' : 'V2 · 按量套餐'"
-        >{{ codingPlan.plan_version.toUpperCase() }}</span>
         <span :class="['level-badge', getLevelStyle(codingPlan.level)]">{{ getLevelLabel(codingPlan.level) }}</span>
+        <VersionMedal v-if="codingPlan.plan_version" :key="codingPlan.plan_version" :version="codingPlan.plan_version" />
       </div>
       <div class="quota-list">
         <div class="quota-item">
@@ -394,28 +391,6 @@ watch(() => props.apiKey, (key) => {
 .section-title {
   font-size: 15px;
   font-weight: 600;
-}
-
-.version-badge {
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 16px;
-  letter-spacing: 0.4px;
-}
-
-.version-badge.version-v3 {
-  background: var(--accent-gradient);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(56, 89, 255, 0.25);
-}
-
-.version-badge.version-v2 {
-  background: var(--bg);
-  color: var(--text-secondary);
-  border-color: var(--border);
 }
 
 .level-badge {
